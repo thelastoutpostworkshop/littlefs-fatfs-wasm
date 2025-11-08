@@ -54,6 +54,7 @@ export class LittleFSError extends Error {
 }
 
 export async function createLittleFS(options: LittleFSOptions = {}): Promise<LittleFS> {
+  console.info("[littlefs-wasm] createLittleFS() starting", options);
   const wasmURL = options.wasmURL ?? new URL("./littlefs.wasm", import.meta.url);
   const exports = await instantiateLittleFSModule(wasmURL);
 
@@ -61,18 +62,27 @@ export async function createLittleFS(options: LittleFSOptions = {}): Promise<Lit
   const blockCount = options.blockCount ?? DEFAULT_BLOCK_COUNT;
   const lookaheadSize = options.lookaheadSize ?? DEFAULT_LOOKAHEAD_SIZE;
 
+  console.info("[littlefs-wasm] Calling lfsjs_init with", {
+    blockSize,
+    blockCount,
+    lookaheadSize
+  });
   const initResult = exports.lfsjs_init(blockSize, blockCount, lookaheadSize);
+  console.info("[littlefs-wasm] lfsjs_init returned", initResult);
   if (initResult < 0) {
     throw new LittleFSError("Failed to initialize LittleFS", initResult);
   }
 
   if (options.formatOnInit) {
+    console.info("[littlefs-wasm] Calling lfsjs_format()");
     const formatResult = exports.lfsjs_format();
+    console.info("[littlefs-wasm] lfsjs_format returned", formatResult);
     if (formatResult < 0) {
       throw new LittleFSError("Failed to format filesystem", formatResult);
     }
   }
 
+  console.info("[littlefs-wasm] Filesystem initialized");
   return new LittleFSClient(exports);
 }
 
@@ -180,15 +190,21 @@ class LittleFSClient implements LittleFS {
 
 async function instantiateLittleFSModule(input: string | URL): Promise<LittleFSExports> {
   const source = resolveWasmURL(input);
-  const imports: WebAssembly.Imports = createDefaultImports();
+  console.info("[littlefs-wasm] Fetching wasm from", source.href);
+  const wasmContext: WasmContext = { memory: null };
+  const imports: WebAssembly.Imports = createDefaultImports(wasmContext);
   let response = await fetch(source);
   if (!response.ok) {
     throw new Error(`Unable to fetch LittleFS wasm from ${response.url}`);
   }
+  console.info("[littlefs-wasm] Fetch complete, status", response.status);
 
   if ("instantiateStreaming" in WebAssembly && typeof WebAssembly.instantiateStreaming === "function") {
     try {
+      console.info("[littlefs-wasm] Attempting instantiateStreaming");
       const streaming = await WebAssembly.instantiateStreaming(response, imports);
+      wasmContext.memory = getExportedMemory(streaming.instance.exports);
+      console.info("[littlefs-wasm] instantiateStreaming succeeded");
       return streaming.instance.exports as unknown as LittleFSExports;
     } catch (error) {
       console.warn("Unable to instantiate LittleFS wasm via streaming, retrying with arrayBuffer()", error);
@@ -196,11 +212,15 @@ async function instantiateLittleFSModule(input: string | URL): Promise<LittleFSE
       if (!response.ok) {
         throw new Error(`Unable to fetch LittleFS wasm from ${response.url}`);
       }
+      console.info("[littlefs-wasm] Fallback fetch complete, status", response.status);
     }
   }
 
+  console.info("[littlefs-wasm] Instantiating from ArrayBuffer fallback");
   const bytes = await response.arrayBuffer();
   const instance = await WebAssembly.instantiate(bytes, imports);
+  wasmContext.memory = getExportedMemory(instance.instance.exports);
+  console.info("[littlefs-wasm] instantiate(bytes) succeeded");
   return instance.instance.exports as unknown as LittleFSExports;
 }
 
@@ -262,7 +282,11 @@ function resolveWasmURL(input: string | URL): URL {
   }
 }
 
-function createDefaultImports(): WebAssembly.Imports {
+interface WasmContext {
+  memory: WebAssembly.Memory | null;
+}
+
+function createDefaultImports(context: WasmContext): WebAssembly.Imports {
   const noop = () => {};
   const ok = () => 0;
 
@@ -273,7 +297,48 @@ function createDefaultImports(): WebAssembly.Imports {
     wasi_snapshot_preview1: {
       fd_close: ok,
       fd_seek: ok,
-      fd_write: (_fd: number, _iov: number, _iovcnt: number, _pnum: number) => 0
+      fd_write: (fd: number, iov: number, iovcnt: number, pnum: number) =>
+        handleFdWrite(context, fd, iov, iovcnt, pnum)
     }
   };
+}
+
+function handleFdWrite(
+  context: WasmContext,
+  fd: number,
+  iov: number,
+  iovcnt: number,
+  pnum: number
+): number {
+  const memory = context.memory;
+  if (!memory) {
+    return 0;
+  }
+
+  const view = new DataView(memory.buffer);
+  let total = 0;
+  for (let i = 0; i < iovcnt; i++) {
+    const base = iov + i * 8;
+    const ptr = view.getUint32(base, true);
+    const len = view.getUint32(base + 4, true);
+    total += len;
+
+    if (fd === 1 || fd === 2) {
+      const bytes = new Uint8Array(memory.buffer, ptr, len);
+      const text = new TextDecoder().decode(bytes);
+      console.info(`[littlefs-wasm::fd_write fd=${fd}] ${text}`);
+    }
+  }
+
+  view.setUint32(pnum, total, true);
+  return 0;
+}
+
+function getExportedMemory(exports: WebAssembly.Exports): WebAssembly.Memory | null {
+  for (const value of Object.values(exports)) {
+    if (value instanceof WebAssembly.Memory) {
+      return value;
+    }
+  }
+  return null;
 }
