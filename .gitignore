@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+third_party/emsdk/
+.emscripten_cache/
+.emscripten_cache_wasm/
+.cache/
+*.log
+*.tmp
+.DS_Store

@@ -1,0 +1,38 @@
+{
+  "name": "littlefs-wasm",
+  "version": "0.1.0",
+  "description": "Tiny LittleFS bindings for the browser via WebAssembly.",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./littlefs.wasm": "./dist/littlefs.wasm"
+  },
+  "scripts": {
+    "build": "npm run build:wasm && npm run build:types",
+    "build:types": "tsc -p tsconfig.json",
+    "build:wasm": "node ./scripts/build-wasm.mjs",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true});\""
+  },
+  "keywords": [
+    "littlefs",
+    "wasm",
+    "browser",
+    "filesystem"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
