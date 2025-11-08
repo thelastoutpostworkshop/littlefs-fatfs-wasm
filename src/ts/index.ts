@@ -185,7 +185,7 @@ async function instantiateLittleFSModule(input: string | URL): Promise<LittleFSE
     throw new Error(`Unable to fetch LittleFS wasm from ${response.url}`);
   }
 
-  const imports: WebAssembly.Imports = {};
+  const imports: WebAssembly.Imports = createDefaultImports();
 
   if ("instantiateStreaming" in WebAssembly && typeof WebAssembly.instantiateStreaming === "function") {
     try {
@@ -257,4 +257,20 @@ function resolveWasmURL(input: string | URL): URL {
   } catch (error) {
     throw new Error(`Unable to resolve wasm URL from "${input}": ${String(error)}`);
   }
+}
+
+function createDefaultImports(): WebAssembly.Imports {
+  const noop = () => {};
+  const ok = () => 0;
+
+  return {
+    env: {
+      emscripten_notify_memory_growth: noop
+    },
+    wasi_snapshot_preview1: {
+      fd_close: ok,
+      fd_seek: ok,
+      fd_write: (_fd: number, _iov: number, _iovcnt: number, _pnum: number) => 0
+    }
+  };
 }
