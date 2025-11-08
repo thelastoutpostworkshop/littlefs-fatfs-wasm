@@ -180,19 +180,22 @@ class LittleFSClient implements LittleFS {
 
 async function instantiateLittleFSModule(input: string | URL): Promise<LittleFSExports> {
   const source = resolveWasmURL(input);
-  const response = await fetch(source);
+  const imports: WebAssembly.Imports = createDefaultImports();
+  let response = await fetch(source);
   if (!response.ok) {
     throw new Error(`Unable to fetch LittleFS wasm from ${response.url}`);
   }
 
-  const imports: WebAssembly.Imports = createDefaultImports();
-
   if ("instantiateStreaming" in WebAssembly && typeof WebAssembly.instantiateStreaming === "function") {
     try {
-      const streaming = await WebAssembly.instantiateStreaming(response.clone(), imports);
+      const streaming = await WebAssembly.instantiateStreaming(response, imports);
       return streaming.instance.exports as unknown as LittleFSExports;
-    } catch {
-      // Continue with buffered instantiation when MIME types do not match.
+    } catch (error) {
+      console.warn("Unable to instantiate LittleFS wasm via streaming, retrying with arrayBuffer()", error);
+      response = await fetch(source);
+      if (!response.ok) {
+        throw new Error(`Unable to fetch LittleFS wasm from ${response.url}`);
+      }
     }
   }
 
