@@ -17,6 +17,9 @@ static struct lfs_config g_cfg;
 static uint8_t *g_storage = NULL;
 static bool g_is_mounted = false;
 
+static size_t lfsjs_total_bytes(const struct lfs_config *cfg);
+static int lfsjs_mount_internal(bool allow_format);
+
 static void lfsjs_release(void) {
     if (g_is_mounted) {
         lfs_unmount(&g_lfs);
@@ -30,6 +33,13 @@ static void lfsjs_release(void) {
 
 static size_t lfsjs_total_bytes(const struct lfs_config *cfg) {
     return (size_t)cfg->block_size * cfg->block_count;
+}
+
+static size_t lfsjs_current_size(void) {
+    if (!g_storage) {
+        return 0;
+    }
+    return lfsjs_total_bytes(&g_cfg);
 }
 
 static void lfsjs_fill_erased(void) {
@@ -111,6 +121,25 @@ static int lfsjs_configure(uint32_t block_size, uint32_t block_count,
     return 0;
 }
 
+static int lfsjs_mount_internal(bool allow_format) {
+    int err = lfs_mount(&g_lfs, &g_cfg);
+    if (err && allow_format) {
+        err = lfs_format(&g_lfs, &g_cfg);
+        if (err) {
+            g_is_mounted = false;
+            return err;
+        }
+        err = lfs_mount(&g_lfs, &g_cfg);
+    }
+
+    if (err == 0) {
+        g_is_mounted = true;
+    } else {
+        g_is_mounted = false;
+    }
+    return err;
+}
+
 static int lfsjs_ensure_mounted(void) {
     if (!g_is_mounted) {
         return LFS_ERR_INVAL;
@@ -126,16 +155,31 @@ int lfsjs_init(uint32_t block_size, uint32_t block_count,
         return err;
     }
 
-    err = lfs_mount(&g_lfs, &g_cfg);
+    err = lfsjs_mount_internal(true);
     if (err) {
-        int fmt_err = lfs_format(&g_lfs, &g_cfg);
-        if (fmt_err) {
-            lfsjs_release();
-            return fmt_err;
-        }
-        err = lfs_mount(&g_lfs, &g_cfg);
+        lfsjs_release();
+    }
+    return err;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int lfsjs_init_from_image(uint32_t block_size, uint32_t block_count,
+                          uint32_t lookahead_size, const uint8_t *image,
+                          uint32_t image_len) {
+    int err = lfsjs_configure(block_size, block_count, lookahead_size);
+    if (err) {
+        return err;
     }
 
+    size_t total = lfsjs_total_bytes(&g_cfg);
+    if (!image || image_len != total) {
+        lfsjs_release();
+        return LFS_ERR_INVAL;
+    }
+
+    memcpy(g_storage, image, total);
+
+    err = lfs_mount(&g_lfs, &g_cfg);
     if (err) {
         lfsjs_release();
         return err;
@@ -159,14 +203,7 @@ int lfsjs_format(void) {
     if (err) {
         return err;
     }
-
-    err = lfs_mount(&g_lfs, &g_cfg);
-    if (err) {
-        return err;
-    }
-
-    g_is_mounted = true;
-    return 0;
+    return lfsjs_mount_internal(false);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -325,4 +362,23 @@ int lfsjs_list(uint32_t buffer_ptr, uint32_t buffer_len) {
         *cursor = '\0';
     }
     return (int)(cursor - (char *)(uintptr_t)buffer_ptr);
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t lfsjs_storage_size(void) {
+    return (uint32_t)lfsjs_current_size();
+}
+
+EMSCRIPTEN_KEEPALIVE
+int lfsjs_export_image(uint32_t buffer_ptr, uint32_t buffer_len) {
+    size_t total = lfsjs_current_size();
+    if (!g_storage || total == 0) {
+        return LFS_ERR_INVAL;
+    }
+    if (buffer_ptr == 0 || buffer_len < total) {
+        return LFS_ERR_NOSPC;
+    }
+
+    memcpy((void *)(uintptr_t)buffer_ptr, g_storage, total);
+    return (int)total;
 }

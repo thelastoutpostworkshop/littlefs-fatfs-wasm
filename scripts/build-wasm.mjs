@@ -34,7 +34,7 @@ const emccArgs = [
   "-s",
   "FILESYSTEM=0",
   "-s",
-  "EXPORTED_FUNCTIONS=['_lfsjs_init','_lfsjs_format','_lfsjs_add_file','_lfsjs_delete_file','_lfsjs_list','_malloc','_free']",
+  "EXPORTED_FUNCTIONS=['_lfsjs_init','_lfsjs_init_from_image','_lfsjs_format','_lfsjs_add_file','_lfsjs_delete_file','_lfsjs_list','_lfsjs_export_image','_lfsjs_storage_size','_malloc','_free']",
   "-o",
   output
 ];

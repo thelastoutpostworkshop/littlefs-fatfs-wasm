@@ -6,6 +6,7 @@ Tiny, dependency-free LittleFS bindings compiled with Emscripten for browsers. T
 
 - Uses upstream LittleFS sources vendored in `third_party/littlefs`.
 - In-memory block device (configurable block size/count/lookahead).
+- Mounts existing LittleFS images and exports them back to binary blobs.
 - TypeScript-first API with zero runtime dependencies.
 - Ships as a single ES module plus a `.wasm` asset (`import.meta.url` friendly).
 - Minimal build pipeline (TypeScript + Emscripten) with simple scripts.
@@ -34,12 +35,14 @@ fs.deleteFile("images/icon.bin");
 
 ```ts
 export async function createLittleFS(options?: LittleFSOptions): Promise<LittleFS>;
+export async function createLittleFSFromImage(image: ArrayBuffer | Uint8Array, options?: LittleFSOptions): Promise<LittleFS>;
 
 interface LittleFS {
   format(): void;
   list(): Array<{ path: string; size: number }>;
   addFile(path: string, data: Uint8Array | ArrayBuffer | string): void;
   deleteFile(path: string): void;
+  toImage(): Uint8Array;
 }
 
 interface LittleFSOptions {
@@ -51,7 +54,7 @@ interface LittleFSOptions {
 }
 ```
 
-`list()` returns every file (including nested directories) produced by a depth-first walk. Entries include file paths (without a leading slash) and byte sizes.
+`list()` returns every file (including nested directories) produced by a depth-first walk. Entries include file paths (without a leading slash) and byte sizes. `createLittleFSFromImage` mounts an existing LittleFS disk image (byte array) without formatting, and `toImage()` returns the current contents as a `Uint8Array` so you can save it back to disk.
 
 ### Building from source
 

@@ -5,6 +5,7 @@ const INITIAL_LIST_BUFFER = 4096;
 const LFS_ERR_NOSPC = -28;
 
 export type FileSource = string | ArrayBuffer | Uint8Array;
+type BinarySource = ArrayBuffer | Uint8Array;
 
 export interface LittleFSEntry {
   path: string;
@@ -30,15 +31,25 @@ export interface LittleFS {
   list(): LittleFSEntry[];
   addFile(path: string, data: FileSource): void;
   deleteFile(path: string): void;
+  toImage(): Uint8Array;
 }
 
 interface LittleFSExports {
   memory: WebAssembly.Memory;
   lfsjs_init(blockSize: number, blockCount: number, lookaheadSize: number): number;
+  lfsjs_init_from_image(
+    blockSize: number,
+    blockCount: number,
+    lookaheadSize: number,
+    imagePtr: number,
+    imageLength: number
+  ): number;
   lfsjs_format(): number;
   lfsjs_list(bufferPtr: number, bufferLen: number): number;
   lfsjs_add_file(pathPtr: number, dataPtr: number, dataLen: number): number;
   lfsjs_delete_file(pathPtr: number): number;
+  lfsjs_export_image(bufferPtr: number, bufferLen: number): number;
+  lfsjs_storage_size(): number;
   malloc(size: number): number;
   free(ptr: number): void;
 }
@@ -83,7 +94,48 @@ export async function createLittleFS(options: LittleFSOptions = {}): Promise<Lit
   }
 
   console.info("[littlefs-wasm] Filesystem initialized");
-  return new LittleFSClient(exports);
+  const client = new LittleFSClient(exports);
+  client.refreshStorageSize();
+  return client;
+}
+
+export async function createLittleFSFromImage(image: BinarySource, options: LittleFSOptions = {}): Promise<LittleFS> {
+  console.info("[littlefs-wasm] createLittleFSFromImage() starting");
+  const wasmURL = options.wasmURL ?? new URL("./littlefs.wasm", import.meta.url);
+  const exports = await instantiateLittleFSModule(wasmURL);
+  const bytes = asBinaryUint8Array(image);
+
+  const blockSize = options.blockSize ?? DEFAULT_BLOCK_SIZE;
+  if (blockSize === 0) {
+    throw new Error("blockSize must be a positive integer");
+  }
+  const inferredBlockCount = bytes.length / blockSize;
+  const blockCount = options.blockCount ?? inferredBlockCount;
+  if (blockCount * blockSize !== bytes.length) {
+    throw new Error("Image size must equal blockSize * blockCount");
+  }
+  const lookaheadSize = options.lookaheadSize ?? DEFAULT_LOOKAHEAD_SIZE;
+
+  const heap = new Uint8Array(exports.memory.buffer);
+  const imagePtr = exports.malloc(bytes.length || 1);
+  if (!imagePtr) {
+    throw new LittleFSError("Failed to allocate WebAssembly memory", LFS_ERR_NOSPC);
+  }
+
+  try {
+    heap.set(bytes, imagePtr);
+    const initResult = exports.lfsjs_init_from_image(blockSize, blockCount, lookaheadSize, imagePtr, bytes.length);
+    if (initResult < 0) {
+      throw new LittleFSError("Failed to initialize LittleFS from image", initResult);
+    }
+  } finally {
+    exports.free(imagePtr);
+  }
+
+  const client = new LittleFSClient(exports);
+  client.refreshStorageSize();
+  console.info("[littlefs-wasm] Filesystem initialized from image");
+  return client;
 }
 
 class LittleFSClient implements LittleFS {
@@ -92,10 +144,12 @@ class LittleFSClient implements LittleFS {
   private readonly encoder = new TextEncoder();
   private readonly decoder = new TextDecoder();
   private listBufferSize = INITIAL_LIST_BUFFER;
+  private storageSize = 0;
 
   constructor(exports: LittleFSExports) {
     this.exports = exports;
     this.heapU8 = new Uint8Array(this.exports.memory.buffer);
+    this.refreshStorageSize();
   }
 
   format(): void {
@@ -155,10 +209,39 @@ class LittleFSClient implements LittleFS {
     }
   }
 
+  toImage(): Uint8Array {
+    const size = this.ensureStorageSize();
+    if (size === 0) {
+      return new Uint8Array();
+    }
+    const ptr = this.alloc(size);
+    try {
+      const copied = this.exports.lfsjs_export_image(ptr, size);
+      this.assertOk(copied, "export filesystem image");
+      return this.heapU8.slice(ptr, ptr + size);
+    } finally {
+      this.exports.free(ptr);
+    }
+  }
+
   private refreshHeap(): void {
     if (this.heapU8.buffer !== this.exports.memory.buffer) {
       this.heapU8 = new Uint8Array(this.exports.memory.buffer);
     }
+  }
+
+  refreshStorageSize(): void {
+    const size = this.exports.lfsjs_storage_size();
+    if (size > 0) {
+      this.storageSize = size;
+    }
+  }
+
+  private ensureStorageSize(): number {
+    if (this.storageSize === 0) {
+      this.refreshStorageSize();
+    }
+    return this.storageSize;
   }
 
   private alloc(size: number): number {
@@ -262,6 +345,16 @@ function asUint8Array(source: FileSource, encoder: TextEncoder): Uint8Array {
     return new Uint8Array(source);
   }
   throw new Error("Unsupported file payload type");
+}
+
+function asBinaryUint8Array(source: BinarySource): Uint8Array {
+  if (source instanceof Uint8Array) {
+    return source;
+  }
+  if (source instanceof ArrayBuffer) {
+    return new Uint8Array(source);
+  }
+  throw new Error("Expected Uint8Array or ArrayBuffer for filesystem image");
 }
 
 function resolveWasmURL(input: string | URL): URL {
