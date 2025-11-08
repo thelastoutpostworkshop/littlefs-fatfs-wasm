@@ -43,6 +43,7 @@ interface LittleFS {
   addFile(path: string, data: Uint8Array | ArrayBuffer | string): void;
   deleteFile(path: string): void;
   toImage(): Uint8Array;
+  readFile(path: string): Uint8Array;
 }
 
 interface LittleFSOptions {
@@ -54,7 +55,7 @@ interface LittleFSOptions {
 }
 ```
 
-`list()` returns every file (including nested directories) produced by a depth-first walk. Entries include file paths (without a leading slash) and byte sizes. `createLittleFSFromImage` mounts an existing LittleFS disk image (byte array) without formatting, and `toImage()` returns the current contents as a `Uint8Array` so you can save it back to disk.
+`list()` returns every file (including nested directories) produced by a depth-first walk. Entries include file paths (without a leading slash) and byte sizes. `createLittleFSFromImage` mounts an existing LittleFS disk image (byte array) without formatting, `toImage()` returns the current contents as a `Uint8Array` so you can save it back to disk, and `readFile()` returns raw file bytes for previews or editors.
 
 ### Building from source
 

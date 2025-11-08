@@ -32,6 +32,7 @@ export interface LittleFS {
   addFile(path: string, data: FileSource): void;
   deleteFile(path: string): void;
   toImage(): Uint8Array;
+  readFile(path: string): Uint8Array;
 }
 
 interface LittleFSExports {
@@ -48,6 +49,8 @@ interface LittleFSExports {
   lfsjs_list(bufferPtr: number, bufferLen: number): number;
   lfsjs_add_file(pathPtr: number, dataPtr: number, dataLen: number): number;
   lfsjs_delete_file(pathPtr: number): number;
+  lfsjs_file_size(pathPtr: number): number;
+  lfsjs_read_file(pathPtr: number, bufferPtr: number, bufferLen: number): number;
   lfsjs_export_image(bufferPtr: number, bufferLen: number): number;
   lfsjs_storage_size(): number;
   malloc(size: number): number;
@@ -221,6 +224,29 @@ class LittleFSClient implements LittleFS {
       return this.heapU8.slice(ptr, ptr + size);
     } finally {
       this.exports.free(ptr);
+    }
+  }
+
+  readFile(path: string): Uint8Array {
+    const normalizedPath = normalizePath(path);
+    const pathPtr = this.allocString(normalizedPath);
+    try {
+      const size = this.exports.lfsjs_file_size(pathPtr);
+      this.assertOk(size, `stat file "${normalizedPath}"`);
+      if (size === 0) {
+        return new Uint8Array();
+      }
+
+      const dataPtr = this.alloc(size);
+      try {
+        const read = this.exports.lfsjs_read_file(pathPtr, dataPtr, size);
+        this.assertOk(read, `read file "${normalizedPath}"`);
+        return this.heapU8.slice(dataPtr, dataPtr + size);
+      } finally {
+        this.exports.free(dataPtr);
+      }
+    } finally {
+      this.exports.free(pathPtr);
     }
   }
 

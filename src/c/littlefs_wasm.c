@@ -364,6 +364,79 @@ int lfsjs_list(uint32_t buffer_ptr, uint32_t buffer_len) {
     return (int)(cursor - (char *)(uintptr_t)buffer_ptr);
 }
 
+static int lfsjs_stat(const char *path, struct lfs_info *info) {
+    if (!path || !info) {
+        return LFS_ERR_INVAL;
+    }
+    return lfs_stat(&g_lfs, path, info);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int lfsjs_file_size(const char *path) {
+    int err = lfsjs_ensure_mounted();
+    if (err) {
+        return err;
+    }
+
+    struct lfs_info info;
+    err = lfsjs_stat(path, &info);
+    if (err) {
+        return err;
+    }
+    if (info.type != LFS_TYPE_REG) {
+        return LFS_ERR_ISDIR;
+    }
+    return (int)info.size;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int lfsjs_read_file(const char *path, uint32_t buffer_ptr, uint32_t buffer_len) {
+    int err = lfsjs_ensure_mounted();
+    if (err) {
+        return err;
+    }
+    if (!path || buffer_ptr == 0 || buffer_len == 0) {
+        return LFS_ERR_INVAL;
+    }
+
+    struct lfs_info info;
+    err = lfsjs_stat(path, &info);
+    if (err) {
+        return err;
+    }
+    if (info.type != LFS_TYPE_REG) {
+        return LFS_ERR_ISDIR;
+    }
+    if ((uint32_t)info.size > buffer_len) {
+        return LFS_ERR_NOSPC;
+    }
+
+    lfs_file_t file;
+    err = lfs_file_open(&g_lfs, &file, path, LFS_O_RDONLY);
+    if (err < 0) {
+        return err;
+    }
+
+    uint8_t *dest = (uint8_t *)(uintptr_t)buffer_ptr;
+    lfs_size_t remaining = info.size;
+    while (remaining > 0) {
+        lfs_size_t chunk = remaining;
+        if (chunk > 4096) {
+            chunk = 4096;
+        }
+        lfs_ssize_t read =
+            lfs_file_read(&g_lfs, &file, dest + (info.size - remaining), chunk);
+        if (read < 0) {
+            lfs_file_close(&g_lfs, &file);
+            return (int)read;
+        }
+        remaining -= (lfs_size_t)read;
+    }
+
+    lfs_file_close(&g_lfs, &file);
+    return (int)info.size;
+}
+
 EMSCRIPTEN_KEEPALIVE
 uint32_t lfsjs_storage_size(void) {
     return (uint32_t)lfsjs_current_size();
