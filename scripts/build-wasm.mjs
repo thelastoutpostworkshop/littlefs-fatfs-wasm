@@ -22,7 +22,7 @@ const targets = [
     ],
     includes: [join(projectRoot, "third_party", "littlefs")],
     exports:
-      "['_lfsjs_init','_lfsjs_init_from_image','_lfsjs_format','_lfsjs_add_file','_lfsjs_delete_file','_lfsjs_list','_lfsjs_file_size','_lfsjs_read_file','_lfsjs_export_image','_lfsjs_storage_size','_malloc','_free']"
+      "['_lfsjs_init','_lfsjs_init_from_image','_lfsjs_format','_lfsjs_add_file','_lfsjs_delete_file','_lfsjs_remove','_lfsjs_mkdir','_lfsjs_rename','_lfsjs_list','_lfsjs_file_size','_lfsjs_read_file','_lfsjs_export_image','_lfsjs_storage_size','_malloc','_free']"
   },
   {
     name: "fatfs",

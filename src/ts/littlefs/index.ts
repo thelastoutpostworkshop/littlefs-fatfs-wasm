@@ -9,6 +9,7 @@ const LFS_ERR_NOSPC = -28;
 export interface LittleFSEntry {
   path: string;
   size: number;
+  type: "file" | "dir";
 }
 
 export interface LittleFSOptions {
@@ -27,9 +28,13 @@ export interface LittleFSOptions {
 
 export interface LittleFS {
   format(): void;
-  list(): LittleFSEntry[];
+  list(path?: string): LittleFSEntry[];
   addFile(path: string, data: FileSource): void;
-  deleteFile(path: string): void;
+  writeFile(path: string, data: FileSource): void;
+  deleteFile(path: string): void; // backward-compat alias
+  delete(path: string, options?: { recursive?: boolean }): void;
+  mkdir(path: string): void;
+  rename(oldPath: string, newPath: string): void;
   toImage(): Uint8Array;
   readFile(path: string): Uint8Array;
 }
@@ -45,9 +50,12 @@ interface LittleFSExports {
     imageLength: number
   ): number;
   lfsjs_format(): number;
-  lfsjs_list(bufferPtr: number, bufferLen: number): number;
+  lfsjs_list(pathPtr: number, bufferPtr: number, bufferLen: number): number;
   lfsjs_add_file(pathPtr: number, dataPtr: number, dataLen: number): number;
   lfsjs_delete_file(pathPtr: number): number;
+  lfsjs_remove(pathPtr: number, recursive: number): number;
+  lfsjs_mkdir(pathPtr: number): number;
+  lfsjs_rename(oldPathPtr: number, newPathPtr: number): number;
   lfsjs_file_size(pathPtr: number): number;
   lfsjs_read_file(pathPtr: number, bufferPtr: number, bufferLen: number): number;
   lfsjs_export_image(bufferPtr: number, bufferLen: number): number;
@@ -159,13 +167,15 @@ class LittleFSClient implements LittleFS {
     this.assertOk(result, "format filesystem");
   }
 
-  list(): LittleFSEntry[] {
+  list(path = "/"): LittleFSEntry[] {
+    const normalizedPath = normalizePathOptional(path);
+    const pathPtr = this.allocString(normalizedPath);
     let capacity = this.listBufferSize;
 
     while (true) {
       const ptr = this.alloc(capacity);
       try {
-        const used = this.exports.lfsjs_list(ptr, capacity);
+        const used = this.exports.lfsjs_list(pathPtr, ptr, capacity);
         if (used === LFS_ERR_NOSPC) {
           this.listBufferSize = capacity * 2;
           capacity = this.listBufferSize;
@@ -184,6 +194,10 @@ class LittleFSClient implements LittleFS {
   }
 
   addFile(path: string, data: FileSource): void {
+    this.writeFile(path, data);
+  }
+
+  writeFile(path: string, data: FileSource): void {
     const normalizedPath = normalizePath(path);
     const payload = asUint8Array(data, this.encoder);
 
@@ -200,14 +214,44 @@ class LittleFSClient implements LittleFS {
     }
   }
 
-  deleteFile(path: string): void {
+  delete(path: string, options?: { recursive?: boolean }): void {
+    const recursive = options?.recursive === true;
     const normalizedPath = normalizePath(path);
     const pathPtr = this.allocString(normalizedPath);
     try {
-      const result = this.exports.lfsjs_delete_file(pathPtr);
-      this.assertOk(result, `delete file "${normalizedPath}"`);
+      const result = this.exports.lfsjs_remove(pathPtr, recursive ? 1 : 0);
+      this.assertOk(result, `delete "${normalizedPath}"${recursive ? " (recursive)" : ""}`);
     } finally {
       this.exports.free(pathPtr);
+    }
+  }
+
+  deleteFile(path: string): void {
+    this.delete(path);
+  }
+
+  mkdir(path: string): void {
+    const normalizedPath = normalizePath(path);
+    const pathPtr = this.allocString(normalizedPath);
+    try {
+      const result = this.exports.lfsjs_mkdir(pathPtr);
+      this.assertOk(result, `mkdir "${normalizedPath}"`);
+    } finally {
+      this.exports.free(pathPtr);
+    }
+  }
+
+  rename(oldPath: string, newPath: string): void {
+    const from = normalizePath(oldPath);
+    const to = normalizePath(newPath);
+    const fromPtr = this.allocString(from);
+    const toPtr = this.allocString(to);
+    try {
+      const result = this.exports.lfsjs_rename(fromPtr, toPtr);
+      this.assertOk(result, `rename "${from}" -> "${to}"`);
+    } finally {
+      this.exports.free(fromPtr);
+      this.exports.free(toPtr);
     }
   }
 
@@ -340,10 +384,11 @@ function parseListPayload(payload: string): LittleFSEntry[] {
     .split("\n")
     .filter((line) => line.length > 0)
     .map((line) => {
-      const [rawPath, rawSize] = line.split("\t");
+      const [rawPath, rawSize, rawType] = line.split("\t");
       return {
         path: rawPath ?? "",
         size: Number(rawSize ?? "0") || 0,
+        type: rawType === "d" ? "dir" : "file"
       };
     });
 }
@@ -355,8 +400,20 @@ function normalizePath(input: string): string {
     throw new Error("Path must point to a file (e.g. \"docs/readme.txt\")");
   }
   const collapsed = withoutRoot.replace(/\/{2,}/g, "/");
-  const clean = collapsed.endsWith("/") ? collapsed.slice(0, -1) : collapsed;
+  const parts = collapsed.split("/").filter(Boolean);
+  if (parts.some((segment) => segment === "..")) {
+    throw new Error("Path must not contain '..'");
+  }
+  const clean = parts.join("/");
   return clean;
+}
+
+function normalizePathOptional(input: string): string {
+  const trimmed = input.trim();
+  if (trimmed === "" || trimmed === "/") {
+    return "/";
+  }
+  return `/${normalizePath(trimmed)}`;
 }
 
 function asUint8Array(source: FileSource, encoder: TextEncoder): Uint8Array {

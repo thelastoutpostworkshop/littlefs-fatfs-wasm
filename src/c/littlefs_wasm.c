@@ -19,6 +19,10 @@ static bool g_is_mounted = false;
 
 static size_t lfsjs_total_bytes(const struct lfs_config *cfg);
 static int lfsjs_mount_internal(bool allow_format);
+static int lfsjs_join_path(const char *base, const char *leaf, char *out,
+                           size_t out_len);
+static int lfsjs_walk(const char *dir, char **cursor, const char *end,
+                      bool include_dirs);
 
 static void lfsjs_release(void) {
     if (g_is_mounted) {
@@ -251,14 +255,14 @@ int lfsjs_delete_file(const char *path) {
     return lfs_remove(&g_lfs, path);
 }
 
-static int lfsjs_emit_file(const char *path, lfs_off_t size, char **cursor,
-                           const char *end) {
+static int lfsjs_emit_entry(const char *path, lfs_off_t size, char type,
+                            char **cursor, const char *end) {
     const char *display = path;
     if (display[0] == '/' && display[1] != '\0') {
         display = &display[1];
     }
 
-    int needed = snprintf(NULL, 0, "%s\t%ld\n", display, (long)size);
+    int needed = snprintf(NULL, 0, "%s\t%ld\t%c\n", display, (long)size, type);
     if (needed < 0) {
         return LFS_ERR_IO;
     }
@@ -266,8 +270,8 @@ static int lfsjs_emit_file(const char *path, lfs_off_t size, char **cursor,
         return LFS_ERR_NOSPC;
     }
 
-    int written = snprintf(*cursor, (size_t)(end - *cursor), "%s\t%ld\n",
-                           display, (long)size);
+    int written = snprintf(*cursor, (size_t)(end - *cursor), "%s\t%ld\t%c\n",
+                           display, (long)size, type);
     if (written != needed) {
         return LFS_ERR_IO;
     }
@@ -290,7 +294,8 @@ static int lfsjs_join_path(const char *base, const char *leaf, char *out,
     return 0;
 }
 
-static int lfsjs_walk(const char *dir, char **cursor, const char *end) {
+static int lfsjs_walk(const char *dir, char **cursor, const char *end,
+                      bool include_dirs) {
     lfs_dir_t directory;
     struct lfs_info info;
 
@@ -321,13 +326,20 @@ static int lfsjs_walk(const char *dir, char **cursor, const char *end) {
         }
 
         if (info.type == LFS_TYPE_DIR) {
-            err = lfsjs_walk(path, cursor, end);
+            if (include_dirs) {
+                err = lfsjs_emit_entry(path, 0, 'd', cursor, end);
+                if (err) {
+                    lfs_dir_close(&g_lfs, &directory);
+                    return err;
+                }
+            }
+            err = lfsjs_walk(path, cursor, end, include_dirs);
             if (err) {
                 lfs_dir_close(&g_lfs, &directory);
                 return err;
             }
         } else if (info.type == LFS_TYPE_REG) {
-            err = lfsjs_emit_file(path, info.size, cursor, end);
+            err = lfsjs_emit_entry(path, info.size, 'f', cursor, end);
             if (err) {
                 lfs_dir_close(&g_lfs, &directory);
                 return err;
@@ -337,31 +349,6 @@ static int lfsjs_walk(const char *dir, char **cursor, const char *end) {
 
     lfs_dir_close(&g_lfs, &directory);
     return 0;
-}
-
-EMSCRIPTEN_KEEPALIVE
-int lfsjs_list(uint32_t buffer_ptr, uint32_t buffer_len) {
-    int err = lfsjs_ensure_mounted();
-    if (err) {
-        return err;
-    }
-    if (!buffer_ptr || !buffer_len) {
-        return LFS_ERR_INVAL;
-    }
-
-    char *cursor = (char *)(uintptr_t)buffer_ptr;
-    const char *end = cursor + buffer_len;
-    *cursor = '\0';
-
-    err = lfsjs_walk("/", &cursor, end);
-    if (err) {
-        return err;
-    }
-
-    if (cursor < end) {
-        *cursor = '\0';
-    }
-    return (int)(cursor - (char *)(uintptr_t)buffer_ptr);
 }
 
 static int lfsjs_stat(const char *path, struct lfs_info *info) {
@@ -454,4 +441,130 @@ int lfsjs_export_image(uint32_t buffer_ptr, uint32_t buffer_len) {
 
     memcpy((void *)(uintptr_t)buffer_ptr, g_storage, total);
     return (int)total;
+}
+
+static int lfsjs_remove_recursive(const char *path);
+
+EMSCRIPTEN_KEEPALIVE
+int lfsjs_list(const char *path, uint32_t buffer_ptr, uint32_t buffer_len) {
+    int err = lfsjs_ensure_mounted();
+    if (err) {
+        return err;
+    }
+    if (!buffer_ptr || !buffer_len) {
+        return LFS_ERR_INVAL;
+    }
+
+    const char *root = (path && path[0]) ? path : "/";
+    char *cursor = (char *)(uintptr_t)buffer_ptr;
+    const char *end = cursor + buffer_len;
+    *cursor = '\0';
+
+    struct lfs_info info;
+    int stat_err = lfs_stat(&g_lfs, root, &info);
+    if (stat_err == 0 && info.type == LFS_TYPE_REG) {
+        err = lfsjs_emit_entry(root, info.size, 'f', &cursor, end);
+    } else {
+        if (stat_err == 0 && info.type == LFS_TYPE_DIR) {
+            err = lfsjs_emit_entry(root, 0, 'd', &cursor, end);
+        }
+        err = lfsjs_walk(root, &cursor, end, true);
+    }
+
+    if (err) {
+        return err;
+    }
+
+    if (cursor < end) {
+        *cursor = '\0';
+    }
+    return (int)(cursor - (char *)(uintptr_t)buffer_ptr);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int lfsjs_mkdir(const char *path) {
+    int err = lfsjs_ensure_mounted();
+    if (err) {
+        return err;
+    }
+    if (!path) {
+        return LFS_ERR_INVAL;
+    }
+    return lfs_mkdir(&g_lfs, path);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int lfsjs_rename(const char *old_path, const char *new_path) {
+    int err = lfsjs_ensure_mounted();
+    if (err) {
+        return err;
+    }
+    if (!old_path || !new_path) {
+        return LFS_ERR_INVAL;
+    }
+    return lfs_rename(&g_lfs, old_path, new_path);
+}
+
+static int lfsjs_remove_recursive(const char *path) {
+    struct lfs_info info;
+    int err = lfs_stat(&g_lfs, path, &info);
+    if (err) {
+        return err;
+    }
+
+    if (info.type == LFS_TYPE_REG) {
+        return lfs_remove(&g_lfs, path);
+    }
+
+    lfs_dir_t dir;
+    err = lfs_dir_open(&g_lfs, &dir, path);
+    if (err) {
+        return err;
+    }
+
+    while (true) {
+        struct lfs_info child;
+        int res = lfs_dir_read(&g_lfs, &dir, &child);
+        if (res < 0) {
+            lfs_dir_close(&g_lfs, &dir);
+            return res;
+        }
+        if (res == 0) {
+            break;
+        }
+        if (strcmp(child.name, ".") == 0 || strcmp(child.name, "..") == 0) {
+            continue;
+        }
+
+        char joined[LFSJS_PATH_MAX];
+        err = lfsjs_join_path(path, child.name, joined, sizeof(joined));
+        if (err) {
+            lfs_dir_close(&g_lfs, &dir);
+            return err;
+        }
+
+        err = lfsjs_remove_recursive(joined);
+        if (err) {
+            lfs_dir_close(&g_lfs, &dir);
+            return err;
+        }
+    }
+
+    lfs_dir_close(&g_lfs, &dir);
+    return lfs_remove(&g_lfs, path);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int lfsjs_remove(const char *path, int recursive) {
+    int err = lfsjs_ensure_mounted();
+    if (err) {
+        return err;
+    }
+    if (!path) {
+        return LFS_ERR_INVAL;
+    }
+    if (!recursive) {
+        return lfs_remove(&g_lfs, path);
+    }
+    return lfsjs_remove_recursive(path);
 }

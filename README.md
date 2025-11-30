@@ -19,16 +19,18 @@ import { createLittleFS } from "littlefs-wasm/littlefs";
 
 const fs = await createLittleFS({ formatOnInit: true });
 
-fs.addFile("docs/readme.txt", "Hello LittleFS!");
-fs.addFile("images/icon.bin", new Uint8Array([0xde, 0xad]));
+fs.mkdir("docs");
+fs.writeFile("docs/readme.txt", "Hello LittleFS!");
+fs.writeFile("images/icon.bin", new Uint8Array([0xde, 0xad]));
 
-console.log(fs.list());
-// => [ { path: "docs/readme.txt", size: 16 }, { path: "images/icon.bin", size: 2 } ]
+console.log(fs.list("/"));
+// => [ { path: "docs", type: "dir", size: 0 }, { path: "docs/readme.txt", type: "file", size: 16 }, ... ]
 
 const bytes = fs.readFile("docs/readme.txt");
 console.log(new TextDecoder().decode(bytes)); // "Hello LittleFS!"
 
-fs.deleteFile("images/icon.bin");
+fs.rename("docs/readme.txt", "docs/hello.txt");
+fs.delete("images", { recursive: true });
 const image = fs.toImage(); // Entire filesystem image as Uint8Array
 ```
 
@@ -59,9 +61,13 @@ export async function createFatFSFromImage(image: ArrayBuffer | Uint8Array, opti
 
 interface LittleFS {
   format(): void;
-  list(): Array<{ path: string; size: number }>;
-  addFile(path: string, data: Uint8Array | ArrayBuffer | string): void;
-  deleteFile(path: string): void;
+  list(path?: string): Array<{ path: string; size: number; type: "file" | "dir" }>;
+  addFile(path: string, data: Uint8Array | ArrayBuffer | string): void; // alias of writeFile
+  writeFile(path: string, data: Uint8Array | ArrayBuffer | string): void;
+  deleteFile(path: string): void; // alias of delete
+  delete(path: string, options?: { recursive?: boolean }): void;
+  mkdir(path: string): void;
+  rename(oldPath: string, newPath: string): void;
   readFile(path: string): Uint8Array;
   toImage(): Uint8Array;
 }
@@ -91,7 +97,7 @@ interface FatFSOptions {
 }
 ```
 
-`list()` returns every file (including nested directories) discovered by a depth-first walk. Entries include normalized paths and byte sizes. `createLittleFSFromImage` / `createFatFSFromImage` mount existing flash images without formatting, `toImage()` exports the current contents, and `readFile()` returns raw file bytes so your Vue client can preview text/images/audio. FatFS automatically creates missing directories for `writeFile`.
+`list()` returns every file and directory (depth-first) under the given path. Entries include normalized paths, type, and byte sizes. `createLittleFSFromImage` / `createFatFSFromImage` mount existing flash images without formatting, `toImage()` exports the current contents, and `readFile()` returns raw file bytes so your Vue client can preview text/images/audio. FatFS automatically creates missing directories for `writeFile`.
 
 ### Building from source
 
