@@ -553,9 +553,13 @@ function normalizePath(input: string): string {
 function normalizeForFs(value: string): string {
   const trimmed = value.replace(/^\/+/, "");
   if (!trimmed) {
-    throw new Error('Path must point to a file (e.g. "docs/readme.txt")');
+    throw new Error('Path must point to a file (e.g. "/readme.txt")');
   }
-  return trimmed;
+  const segments = trimmed.split("/").filter((segment) => segment.length > 0);
+  if (segments.length !== 1) {
+    throw new Error("SPIFFS paths must refer to a single file name (no directories)");
+  }
+  return "/" + segments[0];
 }
 
 function getFsPathCandidates(normalized: string): string[] {
