@@ -24,8 +24,13 @@
       "types": "./dist/fatfs/index.d.ts",
       "import": "./dist/fatfs/index.js"
     },
+    "./spiffs": {
+      "types": "./dist/spiffs/index.d.ts",
+      "import": "./dist/spiffs/index.js"
+    },
     "./littlefs.wasm": "./dist/littlefs/littlefs.wasm",
-    "./fatfs.wasm": "./dist/fatfs/fatfs.wasm"
+    "./fatfs.wasm": "./dist/fatfs/fatfs.wasm",
+    "./spiffs.wasm": "./dist/spiffs/spiffs.wasm"
   },
   "scripts": {
     "build": "npm run build:wasm && npm run build:types",

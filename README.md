@@ -50,6 +50,26 @@ console.log(fatfs.list());
 const exported = fatfs.toImage(); // Persist it back to disk or flash.
 ```
 
+#### SPIFFS
+
+```ts
+import { createSpiffs } from "littlefs-wasm/spiffs";
+
+const spiffs = await createSpiffs({
+  pageSize: 256,
+  blockSize: 4096,
+  blockCount: 256,
+  formatOnInit: true
+});
+
+await spiffs.write("logs/ready.txt", "SPIFFS is ready!");
+console.log(await spiffs.list());
+const usage = await spiffs.getUsage();
+console.log("Free bytes", usage.freeBytes);
+```
+
+SPIFFS exposes the same RAM-backed benefits as the other bindings, including `list`, `read`, `write`, `remove`, `format`, `toImage`, `getUsage`, and the optional `canFit` guard for pacing writes.
+
 ### API surface
 
 ```ts
@@ -58,6 +78,9 @@ export async function createLittleFSFromImage(image: ArrayBuffer | Uint8Array, o
 
 export async function createFatFS(options?: FatFSOptions): Promise<FatFS>;
 export async function createFatFSFromImage(image: ArrayBuffer | Uint8Array, options?: FatFSOptions): Promise<FatFS>;
+
+export async function createSpiffs(options?: SpiffsOptions): Promise<Spiffs>;
+export async function createSpiffsFromImage(image: ArrayBuffer | Uint8Array, options?: SpiffsOptions): Promise<Spiffs>;
 
 interface LittleFS {
   format(): void;
@@ -92,6 +115,39 @@ interface LittleFSOptions {
 interface FatFSOptions {
   blockSize?: number;      // default 512-byte sectors
   blockCount?: number;     // default 1024 sectors (512 KiB)
+  wasmURL?: string | URL;
+  formatOnInit?: boolean;
+}
+
+interface SpiffsEntry {
+  name: string;
+  size: number;
+  type: "file" | "dir";
+}
+
+interface SpiffsUsage {
+  capacityBytes: number;
+  usedBytes: number;
+  freeBytes: number;
+}
+
+interface Spiffs {
+  list(): Promise<SpiffsEntry[]>;
+  read(name: string): Promise<Uint8Array>;
+  write(name: string, data: Uint8Array | ArrayBuffer | string): Promise<void>;
+  remove(name: string): Promise<void>;
+  format(): Promise<void>;
+  toImage(): Promise<Uint8Array>;
+  getUsage(): Promise<SpiffsUsage>;
+  canFit?(name: string, dataLength: number): boolean;
+}
+
+interface SpiffsOptions {
+  pageSize?: number;      // default 256 bytes
+  blockSize?: number;     // default 4096 bytes per block
+  blockCount?: number;    // default 256 blocks (1 MiB)
+  fdCount?: number;       // default 16
+  cachePages?: number;    // default 64
   wasmURL?: string | URL;
   formatOnInit?: boolean;
 }

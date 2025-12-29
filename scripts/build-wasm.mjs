@@ -36,6 +36,22 @@ const targets = [
     includes: [join(projectRoot, "third_party", "fatfs")],
     exports:
       "['_fatfsjs_init','_fatfsjs_init_from_image','_fatfsjs_format','_fatfsjs_write_file','_fatfsjs_delete_file','_fatfsjs_list','_fatfsjs_file_size','_fatfsjs_read_file','_fatfsjs_export_image','_fatfsjs_storage_size','_malloc','_free']"
+  },
+  {
+    name: "spiffs",
+    outputDir: join(distDir, "spiffs"),
+    outputWasm: join(distDir, "spiffs", "spiffs.wasm"),
+    sources: [
+      join(projectRoot, "src", "c", "spiffs_wasm.c"),
+      join(projectRoot, "third_party", "spiffs", "spiffs_nucleus.c"),
+      join(projectRoot, "third_party", "spiffs", "spiffs_gc.c"),
+      join(projectRoot, "third_party", "spiffs", "spiffs_check.c"),
+      join(projectRoot, "third_party", "spiffs", "spiffs_cache.c"),
+      join(projectRoot, "third_party", "spiffs", "spiffs_hydrogen.c")
+    ],
+    includes: [join(projectRoot, "third_party", "spiffs")],
+    exports:
+      "['_spiffsjs_init','_spiffsjs_init_from_image','_spiffsjs_format','_spiffsjs_list','_spiffsjs_file_size','_spiffsjs_read_file','_spiffsjs_write_file','_spiffsjs_remove_file','_spiffsjs_storage_size','_spiffsjs_export_image','_spiffsjs_get_usage','_spiffsjs_can_fit','_malloc','_free']"
   }
 ];
 
