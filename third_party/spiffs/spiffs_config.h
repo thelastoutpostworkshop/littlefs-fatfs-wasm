@@ -61,7 +61,7 @@ typedef uint8_t u8_t;
 #endif
 
 #ifndef SPIFFS_GC_MAX_RUNS
-#define SPIFFS_GC_MAX_RUNS 5
+#define SPIFFS_GC_MAX_RUNS 10
 #endif
 
 #ifndef SPIFFS_GC_HEUR_W_DELET
@@ -81,7 +81,7 @@ typedef uint8_t u8_t;
 #endif
 
 #ifndef SPIFFS_OBJ_META_LEN
-#define SPIFFS_OBJ_META_LEN 0
+#define SPIFFS_OBJ_META_LEN 4
 #endif
 
 #ifndef SPIFFS_COPY_BUFFER_STACK
@@ -89,11 +89,11 @@ typedef uint8_t u8_t;
 #endif
 
 #ifndef SPIFFS_USE_MAGIC
-#define SPIFFS_USE_MAGIC 0
+#define SPIFFS_USE_MAGIC 1
 #endif
 
 #ifndef SPIFFS_USE_MAGIC_LENGTH
-#define SPIFFS_USE_MAGIC_LENGTH 0
+#define SPIFFS_USE_MAGIC_LENGTH 1
 #endif
 
 #ifndef SPIFFS_HAL_CALLBACK_EXTRA
@@ -113,7 +113,7 @@ typedef uint8_t u8_t;
 #endif
 
 #ifndef SPIFFS_IX_MAP
-#define SPIFFS_IX_MAP 0
+#define SPIFFS_IX_MAP 1
 #endif
 
 #ifndef SPIFFS_NO_BLIND_WRITES

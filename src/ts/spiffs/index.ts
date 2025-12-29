@@ -217,30 +217,52 @@ class SpiffsClient implements Spiffs {
 
   async read(name: string): Promise<Uint8Array> {
     const normalized = normalizePath(name);
-    const pathPtr = this.allocString(normalized);
-    try {
-      const size = this.exports.spiffsjs_file_size(pathPtr);
-      this.assertOk(size, `stat file "${normalized}"`);
-      if (size === 0) {
-        return new Uint8Array();
-      }
-      const dataPtr = this.alloc(size);
+    const candidates = getFsPathCandidates(normalized);
+    let chosenPath: string | null = null;
+    let fileSize: number | null = null;
+    let lastError = 0;
+
+    for (const candidate of candidates) {
+      const pathPtr = this.allocString(candidate);
       try {
-        const read = this.exports.spiffsjs_read_file(pathPtr, dataPtr, size);
-        this.assertOk(read, `read file "${normalized}"`);
-        return this.heapU8.slice(dataPtr, dataPtr + size);
+        const size = this.exports.spiffsjs_file_size(pathPtr);
+        if (size >= 0) {
+          chosenPath = candidate;
+          fileSize = size;
+          break;
+        }
+        lastError = size;
       } finally {
-        this.exports.free(dataPtr);
+        this.exports.free(pathPtr);
       }
+    }
+
+    if (fileSize === null || chosenPath === null) {
+      this.assertOk(lastError, `stat file "${normalized}"`);
+      return new Uint8Array();
+    }
+
+    if (fileSize === 0) {
+      return new Uint8Array();
+    }
+
+    const dataPtr = this.alloc(fileSize);
+    const pathPtr = this.allocString(chosenPath);
+    try {
+      const read = this.exports.spiffsjs_read_file(pathPtr, dataPtr, fileSize);
+      this.assertOk(read, `read file "${normalized}"`);
+      return this.heapU8.slice(dataPtr, dataPtr + fileSize);
     } finally {
+      this.exports.free(dataPtr);
       this.exports.free(pathPtr);
     }
   }
 
   async write(name: string, data: FileSource): Promise<void> {
     const normalized = normalizePath(name);
+    const fsPath = normalizeForFs(normalized);
     const payload = asUint8Array(data, this.encoder);
-    const pathPtr = this.allocString(normalized);
+    const pathPtr = this.allocString(fsPath);
     const dataPtr = payload.length ? this.alloc(payload.length) : 0;
     try {
       if (payload.length > 0) {
@@ -262,7 +284,8 @@ class SpiffsClient implements Spiffs {
 
   async remove(name: string): Promise<void> {
     const normalized = normalizePath(name);
-    const pathPtr = this.allocString(normalized);
+    const fsPath = normalizeForFs(normalized);
+    const pathPtr = this.allocString(fsPath);
     try {
       const result = this.exports.spiffsjs_remove_file(pathPtr);
       this.assertOk(result, `delete file "${normalized}"`);
@@ -309,7 +332,8 @@ class SpiffsClient implements Spiffs {
 
   canFit(name: string, dataLength: number): boolean {
     const normalized = normalizePath(name);
-    const pathPtr = this.allocString(normalized);
+    const fsPath = normalizeForFs(normalized);
+    const pathPtr = this.allocString(fsPath);
     try {
       const result = this.exports.spiffsjs_can_fit(pathPtr, dataLength);
       if (result >= 0) {
@@ -414,12 +438,32 @@ function parseListPayload(payload: string): SpiffsEntry[] {
 
 function normalizePath(input: string): string {
   const value = input.trim().replace(/\\/g, "/");
-  const withoutRoot = value.replace(/^\/+/, "");
-  if (!withoutRoot) {
+  const collapsed = value.replace(/\/{2,}/g, "/");
+  const cleaned =
+    collapsed.endsWith("/") && collapsed !== "/"
+      ? collapsed.slice(0, -1)
+      : collapsed;
+  if (!cleaned || cleaned === "/") {
     throw new Error('Path must point to a file (e.g. "docs/readme.txt")');
   }
-  const collapsed = withoutRoot.replace(/\/{2,}/g, "/");
-  return collapsed.endsWith("/") ? collapsed.slice(0, -1) : collapsed;
+  return cleaned;
+}
+
+function normalizeForFs(value: string): string {
+  const trimmed = value.replace(/^\/+/, "");
+  if (!trimmed) {
+    throw new Error('Path must point to a file (e.g. "docs/readme.txt")');
+  }
+  return trimmed;
+}
+
+function getFsPathCandidates(normalized: string): string[] {
+  const candidates = [normalized];
+  const trimmed = normalized.replace(/^\/+/, "");
+  if (trimmed && trimmed !== normalized) {
+    candidates.push(trimmed);
+  }
+  return candidates;
 }
 
 function validateSpiffsLayout(

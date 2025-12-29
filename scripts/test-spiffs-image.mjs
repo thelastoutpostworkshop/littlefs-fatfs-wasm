@@ -48,7 +48,7 @@ if (entries.length > 0) {
     const bytesValue = await spiffs.read(first.name);
     console.log('First entry size ' + bytesValue.length + ' bytes');
   } catch (error) {
-    console.warn('Unable to read first entry:', error.message ?? error);
+    console.warn('Unable to read first entry:', error.message ?? error, 'code', error.code ?? '(n/a)');
   }
 }
 const usage = await spiffs.getUsage();
