@@ -309,7 +309,6 @@ int spiffsjs_format(void) {
     if (err != SPIFFS_OK) {
         return err;
     }
-    memset(g_storage, 0xFF, g_total_bytes);
     err = spiffsjs_mount(false);
     if (err) {
         spiffsjs_release();
