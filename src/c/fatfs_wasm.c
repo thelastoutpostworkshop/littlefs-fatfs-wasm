@@ -191,21 +191,23 @@ static int fatfsjs_join_path(const char *base, const char *leaf, char *out,
                : 0;
 }
 
-static int fatfsjs_emit_file(const char *path, FSIZE_t size, char **cursor,
-                             const char *end) {
+static int fatfsjs_emit_entry(const char *path, FSIZE_t size, char type,
+                              char **cursor, const char *end) {
     const char *display = path;
     if (display[0] == '/' && display[1] != '\0') {
         display = &display[1];
     }
-    int needed = snprintf(NULL, 0, "%s\t%lu\n", display, (unsigned long)size);
+    unsigned long long display_size = (unsigned long long)size;
+    int needed = snprintf(NULL, 0, "%s\t%llu\t%c\n", display, display_size,
+                          type);
     if (needed < 0) {
         return -(int)FR_INT_ERR;
     }
     if (*cursor + needed + 1 > end) {
         return -(int)FR_NOT_ENOUGH_CORE;
     }
-    int written = snprintf(*cursor, (size_t)(end - *cursor), "%s\t%lu\n",
-                           display, (unsigned long)size);
+    int written = snprintf(*cursor, (size_t)(end - *cursor), "%s\t%llu\t%c\n",
+                           display, display_size, type);
     if (written != needed) {
         return -(int)FR_INT_ERR;
     }
@@ -244,13 +246,18 @@ static int fatfsjs_walk(const char *path, char **cursor, const char *end) {
         }
 
         if (info.fattrib & AM_DIR) {
-            int err = fatfsjs_walk(child, cursor, end);
+            int err = fatfsjs_emit_entry(child, 0, 'd', cursor, end);
+            if (err) {
+                f_closedir(&dir);
+                return err;
+            }
+            err = fatfsjs_walk(child, cursor, end);
             if (err) {
                 f_closedir(&dir);
                 return err;
             }
         } else {
-            int err = fatfsjs_emit_file(child, info.fsize, cursor, end);
+            int err = fatfsjs_emit_entry(child, info.fsize, 'f', cursor, end);
             if (err) {
                 f_closedir(&dir);
                 return err;
@@ -468,7 +475,7 @@ int fatfsjs_read_file(const char *path, uint32_t buffer_ptr,
 }
 
 EMSCRIPTEN_KEEPALIVE
-int fatfsjs_list(uint32_t buffer_ptr, uint32_t buffer_len) {
+int fatfsjs_list(const char *path, uint32_t buffer_ptr, uint32_t buffer_len) {
     int err = fatfsjs_ensure_mounted();
     if (err) {
         return err;
@@ -477,14 +484,34 @@ int fatfsjs_list(uint32_t buffer_ptr, uint32_t buffer_len) {
         return -(int)FR_INVALID_PARAMETER;
     }
 
+    const char *target = (path && path[0]) ? path : "/";
     char *cursor = (char *)(uintptr_t)buffer_ptr;
     const char *end = cursor + buffer_len;
     *cursor = '\0';
 
-    err = fatfsjs_walk("/", &cursor, end);
-    if (err) {
-        return err;
+    FILINFO info;
+    memset(&info, 0, sizeof(info));
+    FRESULT fr = f_stat(target, &info);
+    if (fr != FR_OK) {
+        return fatfsjs_result(fr);
     }
+
+    if (info.fattrib & AM_DIR) {
+        err = fatfsjs_emit_entry(target, 0, 'd', &cursor, end);
+        if (err) {
+            return err;
+        }
+        err = fatfsjs_walk(target, &cursor, end);
+        if (err) {
+            return err;
+        }
+    } else {
+        err = fatfsjs_emit_entry(target, info.fsize, 'f', &cursor, end);
+        if (err) {
+            return err;
+        }
+    }
+
     if (cursor < end) {
         *cursor = '\0';
     }

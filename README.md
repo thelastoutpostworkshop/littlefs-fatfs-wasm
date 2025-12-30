@@ -45,7 +45,19 @@ fatfs.writeFile("MUSIC/track1.raw", someAudioBytes);
 fatfs.writeFile("NOTES/todo.txt", "Ship FatFS preview");
 
 console.log(fatfs.list());
-// => [ { path: "MUSIC/track1.raw", size: 32768 }, { path: "NOTES/todo.txt", size: 17 } ]
+// => [
+//      { path: "/", type: "dir", size: 0 },
+//      { path: "MUSIC", type: "dir", size: 0 },
+//      { path: "MUSIC/track1.raw", type: "file", size: 32768 },
+//      { path: "NOTES", type: "dir", size: 0 },
+//      { path: "NOTES/todo.txt", type: "file", size: 17 }
+//    ]
+
+console.log(fatfs.list("MUSIC"));
+// => [
+//      { path: "MUSIC", type: "dir", size: 0 },
+//      { path: "MUSIC/track1.raw", type: "file", size: 32768 }
+//    ]
 
 const exported = fatfs.toImage(); // Persist it back to disk or flash.
 ```
@@ -97,7 +109,7 @@ interface LittleFS {
 
 interface FatFS {
   format(): void;
-  list(): Array<{ path: string; size: number }>;
+  list(path?: string): Array<{ path: string; size: number; type: "file" | "dir" }>;
   writeFile(path: string, data: Uint8Array | ArrayBuffer | string): void;
   readFile(path: string): Uint8Array;
   deleteFile(path: string): void;

@@ -8,6 +8,7 @@ const FATFS_ERR_NOT_ENOUGH_CORE = -17;
 export interface FatFSEntry {
   path: string;
   size: number;
+  type: "file" | "dir";
 }
 
 export interface FatFSOptions {
@@ -19,7 +20,7 @@ export interface FatFSOptions {
 
 export interface FatFS {
   format(): void;
-  list(): FatFSEntry[];
+  list(path?: string): FatFSEntry[];
   readFile(path: string): Uint8Array;
   writeFile(path: string, data: FileSource): void;
   deleteFile(path: string): void;
@@ -31,7 +32,7 @@ interface FatFSExports {
   fatfsjs_init(blockSize: number, blockCount: number): number;
   fatfsjs_init_from_image(blockSize: number, blockCount: number, imagePtr: number, imageLen: number): number;
   fatfsjs_format(): number;
-  fatfsjs_list(bufferPtr: number, bufferLen: number): number;
+  fatfsjs_list(pathPtr: number, bufferPtr: number, bufferLen: number): number;
   fatfsjs_file_size(pathPtr: number): number;
   fatfsjs_read_file(pathPtr: number, bufferPtr: number, bufferLen: number): number;
   fatfsjs_write_file(pathPtr: number, dataPtr: number, dataLen: number): number;
@@ -133,26 +134,32 @@ class FatFSClient implements FatFS {
     this.assertOk(result, "format filesystem");
   }
 
-  list(): FatFSEntry[] {
-    let capacity = this.listBufferSize;
-    while (true) {
-      const ptr = this.alloc(capacity);
-      try {
-        const used = this.exports.fatfsjs_list(ptr, capacity);
-        if (used === FATFS_ERR_NOT_ENOUGH_CORE) {
-          this.listBufferSize = capacity * 2;
-          capacity = this.listBufferSize;
-          continue;
+  list(path = "/"): FatFSEntry[] {
+    const normalizedPath = normalizeListPath(path);
+    const pathPtr = this.allocString(normalizedPath);
+    try {
+      let capacity = this.listBufferSize;
+      while (true) {
+        const ptr = this.alloc(capacity);
+        try {
+          const used = this.exports.fatfsjs_list(pathPtr, ptr, capacity);
+          if (used === FATFS_ERR_NOT_ENOUGH_CORE) {
+            this.listBufferSize = capacity * 2;
+            capacity = this.listBufferSize;
+            continue;
+          }
+          this.assertOk(used, "list files");
+          if (used === 0) {
+            return [];
+          }
+          const payload = this.decoder.decode(this.heapU8.subarray(ptr, ptr + used));
+          return parseListPayload(payload);
+        } finally {
+          this.exports.free(ptr);
         }
-        this.assertOk(used, "list files");
-        if (used === 0) {
-          return [];
-        }
-        const payload = this.decoder.decode(this.heapU8.subarray(ptr, ptr + used));
-        return parseListPayload(payload);
-      } finally {
-        this.exports.free(ptr);
       }
+    } finally {
+      this.exports.free(pathPtr);
     }
   }
 
@@ -301,13 +308,14 @@ function parseListPayload(payload: string): FatFSEntry[] {
     .split("\n")
     .filter((line) => line.length > 0)
     .map((line) => {
-      const [rawPath, rawSize] = line.split("\t");
+      const [rawPath, rawSize, rawType] = line.split("\t");
       return {
         path: rawPath ?? "",
-        size: Number(rawSize ?? "0") || 0
+        size: Number(rawSize ?? "0") || 0,
+        type: rawType === "d" ? "dir" : "file"
       };
     });
-}
+  }
 
 function normalizePath(input: string): string {
   const value = input.trim().replace(/\\/g, "/");
@@ -318,6 +326,14 @@ function normalizePath(input: string): string {
   }
   const withoutTrailing = withoutRoot.replace(/\/+$/g, "");
   return "/" + withoutTrailing;
+}
+
+function normalizeListPath(input?: string): string {
+  const trimmed = input?.trim() ?? "";
+  if (trimmed === "" || trimmed === "/") {
+    return "/";
+  }
+  return normalizePath(trimmed);
 }
 
 function asUint8Array(source: FileSource, encoder: TextEncoder): Uint8Array {
