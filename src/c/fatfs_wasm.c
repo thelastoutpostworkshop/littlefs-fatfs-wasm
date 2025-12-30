@@ -396,6 +396,46 @@ int fatfsjs_write_file(const char *path, const uint8_t *data, uint32_t length) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+int fatfsjs_mkdir(const char *path) {
+    int err = fatfsjs_ensure_mounted();
+    if (err) {
+        return err;
+    }
+    if (!path) {
+        return -(int)FR_INVALID_PARAMETER;
+    }
+
+    err = fatfsjs_mkdirs(path);
+    if (err) {
+        return err;
+    }
+
+    FRESULT fr = f_mkdir(path);
+    if (fr == FR_EXIST) {
+        return 0;
+    }
+    return fatfsjs_result(fr);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int fatfsjs_rename(const char *old_path, const char *new_path) {
+    int err = fatfsjs_ensure_mounted();
+    if (err) {
+        return err;
+    }
+    if (!old_path || !new_path) {
+        return -(int)FR_INVALID_PARAMETER;
+    }
+
+    err = fatfsjs_mkdirs(new_path);
+    if (err) {
+        return err;
+    }
+
+    return fatfsjs_result(f_rename(old_path, new_path));
+}
+
+EMSCRIPTEN_KEEPALIVE
 int fatfsjs_delete_file(const char *path) {
     int err = fatfsjs_ensure_mounted();
     if (err) {

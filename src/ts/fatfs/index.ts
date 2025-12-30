@@ -21,6 +21,8 @@ export interface FatFSOptions {
 export interface FatFS {
   format(): void;
   list(path?: string): FatFSEntry[];
+  mkdir(path: string): void;
+  rename(oldPath: string, newPath: string): void;
   readFile(path: string): Uint8Array;
   writeFile(path: string, data: FileSource): void;
   deleteFile(path: string): void;
@@ -37,6 +39,8 @@ interface FatFSExports {
   fatfsjs_read_file(pathPtr: number, bufferPtr: number, bufferLen: number): number;
   fatfsjs_write_file(pathPtr: number, dataPtr: number, dataLen: number): number;
   fatfsjs_delete_file(pathPtr: number): number;
+  fatfsjs_mkdir(pathPtr: number): number;
+  fatfsjs_rename(oldPathPtr: number, newPathPtr: number): number;
   fatfsjs_export_image(bufferPtr: number, bufferLen: number): number;
   fatfsjs_storage_size(): number;
   malloc(size: number): number;
@@ -160,6 +164,31 @@ class FatFSClient implements FatFS {
       }
     } finally {
       this.exports.free(pathPtr);
+    }
+  }
+
+  mkdir(path: string): void {
+    const normalizedPath = normalizePath(path);
+    const pathPtr = this.allocString(normalizedPath);
+    try {
+      const result = this.exports.fatfsjs_mkdir(pathPtr);
+      this.assertOk(result, `mkdir "${normalizedPath}"`);
+    } finally {
+      this.exports.free(pathPtr);
+    }
+  }
+
+  rename(oldPath: string, newPath: string): void {
+    const from = normalizePath(oldPath);
+    const to = normalizePath(newPath);
+    const fromPtr = this.allocString(from);
+    const toPtr = this.allocString(to);
+    try {
+      const result = this.exports.fatfsjs_rename(fromPtr, toPtr);
+      this.assertOk(result, `rename "${from}" -> "${to}"`);
+    } finally {
+      this.exports.free(fromPtr);
+      this.exports.free(toPtr);
     }
   }
 

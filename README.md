@@ -110,6 +110,8 @@ interface LittleFS {
 interface FatFS {
   format(): void;
   list(path?: string): Array<{ path: string; size: number; type: "file" | "dir" }>;
+  mkdir(path: string): void;
+  rename(oldPath: string, newPath: string): void;
   writeFile(path: string, data: Uint8Array | ArrayBuffer | string): void;
   readFile(path: string): Uint8Array;
   deleteFile(path: string): void;
