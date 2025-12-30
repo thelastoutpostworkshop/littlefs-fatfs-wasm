@@ -34,6 +34,9 @@ fs.delete("images", { recursive: true });
 const image = fs.toImage(); // Entire filesystem image as Uint8Array
 ```
 
+console.log(fs.getUsage());
+// => { capacityBytes: 262144, usedBytes: 16, freeBytes: 262128 }
+
 #### FatFS
 
 ```ts
@@ -58,6 +61,9 @@ console.log(fatfs.list("MUSIC"));
 //      { path: "MUSIC", type: "dir", size: 0 },
 //      { path: "MUSIC/track1.raw", type: "file", size: 32768 }
 //    ]
+
+console.log(fatfs.getUsage());
+// => { capacityBytes: 524288, usedBytes: 32768, freeBytes: 491520 }
 
 const exported = fatfs.toImage(); // Persist it back to disk or flash.
 ```
@@ -105,6 +111,13 @@ interface LittleFS {
   rename(oldPath: string, newPath: string): void;
   readFile(path: string): Uint8Array;
   toImage(): Uint8Array;
+  getUsage(): FileSystemUsage;
+}
+
+interface FileSystemUsage {
+  capacityBytes: number;
+  usedBytes: number;
+  freeBytes: number;
 }
 
 interface FatFS {
@@ -116,6 +129,7 @@ interface FatFS {
   readFile(path: string): Uint8Array;
   deleteFile(path: string): void;
   toImage(): Uint8Array;
+  getUsage(): FileSystemUsage;
 }
 
 interface LittleFSOptions {

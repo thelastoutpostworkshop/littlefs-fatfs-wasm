@@ -1,4 +1,4 @@
-import type { FileSource, BinarySource } from "../shared/types";
+import type { FileSource, BinarySource, FileSystemUsage } from "../shared/types";
 
 const DEFAULT_BLOCK_SIZE = 512;
 const DEFAULT_BLOCK_COUNT = 1024;
@@ -27,6 +27,7 @@ export interface FatFS {
   writeFile(path: string, data: FileSource): void;
   deleteFile(path: string): void;
   toImage(): Uint8Array;
+  getUsage(): FileSystemUsage;
 }
 
 interface FatFSExports {
@@ -257,6 +258,23 @@ class FatFSClient implements FatFS {
     } finally {
       this.exports.free(ptr);
     }
+  }
+
+  getUsage(): FileSystemUsage {
+    const capacityBytes = this.ensureStorageSize();
+    const entries = this.list("/");
+    const usedBytes = entries.reduce((acc, entry) => (entry.type === "file" ? acc + entry.size : acc), 0);
+    const freeBytes = capacityBytes > usedBytes ? capacityBytes - usedBytes : 0;
+    return {
+      capacityBytes,
+      usedBytes,
+      freeBytes
+    };
+  }
+
+  private ensureStorageSize(): number {
+    const size = this.exports.fatfsjs_storage_size();
+    return size > 0 ? size : 0;
   }
 
   private refreshHeap(): void {

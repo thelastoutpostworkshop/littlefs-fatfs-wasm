@@ -1,4 +1,4 @@
-import type { FileSource, BinarySource } from "../shared/types";
+import type { FileSource, BinarySource, FileSystemUsage } from "../shared/types";
 
 const DEFAULT_BLOCK_SIZE = 512;
 const DEFAULT_BLOCK_COUNT = 512;
@@ -37,6 +37,7 @@ export interface LittleFS {
   rename(oldPath: string, newPath: string): void;
   toImage(): Uint8Array;
   readFile(path: string): Uint8Array;
+  getUsage(): FileSystemUsage;
 }
 
 interface LittleFSExports {
@@ -268,6 +269,18 @@ class LittleFSClient implements LittleFS {
     } finally {
       this.exports.free(ptr);
     }
+  }
+
+  getUsage(): FileSystemUsage {
+    const capacityBytes = this.ensureStorageSize();
+    const entries = this.list("/");
+    const usedBytes = entries.reduce((acc, entry) => (entry.type === "file" ? acc + entry.size : acc), 0);
+    const freeBytes = capacityBytes > usedBytes ? capacityBytes - usedBytes : 0;
+    return {
+      capacityBytes,
+      usedBytes,
+      freeBytes
+    };
   }
 
   readFile(path: string): Uint8Array {
