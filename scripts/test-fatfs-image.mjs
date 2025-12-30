@@ -61,19 +61,41 @@ try {
   console.log("Entry count", entries.length);
   entries.forEach((entry) => console.log(entry.path + "\t" + entry.size));
 
-  if (entries.length > 0) {
-    const first = entries[0];
+  let lastRead = null;
+  for (const entry of entries) {
     try {
-      const bytesValue = fatfs.readFile(first.path);
+      const bytesValue = fatfs.readFile(entry.path);
       console.log(
-        "First entry size " +
-          bytesValue.length +
-          " bytes ->",
+        `SUCCESS read ${entry.path} (${bytesValue.length} bytes) ->`,
         Buffer.from(bytesValue).toString("utf8")
       );
+      lastRead = entry.path;
+      break;
     } catch (error) {
-      console.warn("Unable to read first entry:", error.message ?? error);
+      console.warn(
+        "Unable to read entry",
+        entry.path,
+        "->",
+        error.message ?? error
+      );
     }
+  }
+
+  if (!lastRead) {
+    const testPath = "/fatfs-test.txt";
+    const testPayload = Buffer.from(
+      "fatfs wasm smoke payload " + Date.now().toString()
+    );
+    fatfs.writeFile(testPath, testPayload);
+    const roundTrip = fatfs.readFile(testPath);
+    console.log(
+      "Created test file",
+      testPath,
+      "read back",
+      roundTrip.length,
+      "bytes ->",
+      Buffer.from(roundTrip).toString("utf8")
+    );
   }
 
   const exported = fatfs.toImage();
