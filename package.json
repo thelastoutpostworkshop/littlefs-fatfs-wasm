@@ -37,7 +37,8 @@
     "build:types": "tsc -p tsconfig.json",
     "build:wasm": "node ./scripts/build-wasm.mjs",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true});\"",
-    "test:spiffs": "node ./scripts/test-spiffs-image.mjs"
+    "test:spiffs": "node ./scripts/test-spiffs-image.mjs",
+    "test:fatfs": "node ./scripts/test-fatfs-image.mjs"
   },
   "keywords": [
     "littlefs",
