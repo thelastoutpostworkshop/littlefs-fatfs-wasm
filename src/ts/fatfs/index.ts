@@ -311,12 +311,13 @@ function parseListPayload(payload: string): FatFSEntry[] {
 
 function normalizePath(input: string): string {
   const value = input.trim().replace(/\\/g, "/");
-  const withoutRoot = value.replace(/^\/+/, "");
+  const collapsed = value.replace(/\/{2,}/g, "/");
+  const withoutRoot = collapsed.replace(/^\/+/, "");
   if (!withoutRoot) {
-    throw new Error('Path must point to a file (e.g. "docs/readme.txt")');
+    throw new Error('Path must point to a file (e.g. "/docs/readme.txt")');
   }
-  const collapsed = withoutRoot.replace(/\/{2,}/g, "/");
-  return collapsed.endsWith("/") ? collapsed.slice(0, -1) : collapsed;
+  const withoutTrailing = withoutRoot.replace(/\/+$/g, "");
+  return "/" + withoutTrailing;
 }
 
 function asUint8Array(source: FileSource, encoder: TextEncoder): Uint8Array {
