@@ -40,7 +40,7 @@ console.log(fs.getUsage());
 #### FatFS
 
 ```ts
-import { createFatFS } from "littlefs-wasm/fatfs";
+import { createFatFS, FAT_MOUNT } from "littlefs-wasm/fatfs";
 
 const fatfs = await createFatFS({ formatOnInit: true });
 
@@ -67,6 +67,10 @@ console.log(fatfs.getUsage());
 
 const exported = fatfs.toImage(); // Persist it back to disk or flash.
 ```
+
+The module exports `FAT_MOUNT` (equal to `/fatfs`) so the paths you pass to `list`, `readFile`, `writeFile` and friends already match the ESP32 mount point that firmware exposes.
+
+> **ESP32 mount reminder:** The ESP32 VFS attaches the FAT partition labeled `fat` at `/fatfs`, so all firmware file operations must go through that prefix (`/fatfs/...` rather than bare `/`). The wasm bindings expose the partition root itself, so you can use the paths shown above when emulating or manipulating the RAM-backed image in the browser.
 
 #### SPIFFS
 

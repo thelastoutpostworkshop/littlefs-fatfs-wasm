@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { readFile, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,16 @@ globalThis.fetch = async (resource, init) => {
 };
 
 const DEFAULT_IMAGE = "C:\\Users\\charles\\Downloads\\fatfs_good.bin";
+
+function normalizeEntryPath(path) {
+  if (!path) {
+    return "";
+  }
+  if (path === "/") {
+    return "/";
+  }
+  return path.replace(/^\/+/, "");
+}
 
 try {
   const pathArg = process.argv[2] ?? DEFAULT_IMAGE;
@@ -50,56 +61,109 @@ try {
 
   const trimmed = bytes.slice(0, blockCount * blockSize);
 
-  const { createFatFSFromImage } = await import("../dist/fatfs/index.js");
-  const fatfs = await createFatFSFromImage(trimmed, {
-    blockSize,
-    blockCount
-  });
+const { createFatFSFromImage } = await import("../dist/fatfs/index.js");
+const fatfs = await createFatFSFromImage(trimmed, {
+  blockSize,
+  blockCount
+});
   console.log("Mounted FatFS image", blockCount, "blocks");
+
+  const usage = fatfs.getUsage();
+  const totalBytes = blockSize * blockCount;
+  assert.strictEqual(
+    usage.capacityBytes,
+    totalBytes,
+    "Usage reports the configured volume size"
+  );
+  assert.strictEqual(
+    usage.usedBytes + usage.freeBytes,
+    totalBytes,
+    "Capacity = used + free"
+  );
+  assert.ok(usage.freeBytes >= 0, "Free bytes are non-negative");
+  console.log("Usage", usage);
 
   const entries = fatfs.list();
   console.log("Entry count", entries.length);
   entries.forEach((entry) => console.log(entry.path + "\t" + entry.size));
+  assert(entries.length > 0, "Listing should return at least one entry");
 
-  let lastRead = null;
-  for (const entry of entries) {
-    try {
-      const bytesValue = fatfs.readFile(entry.path);
-      console.log(
-        `SUCCESS read ${entry.path} (${bytesValue.length} bytes) ->`,
-        Buffer.from(bytesValue).toString("utf8")
-      );
-      lastRead = entry.path;
-      break;
-    } catch (error) {
-      console.warn(
-        "Unable to read entry",
-        entry.path,
-        "->",
-        error.message ?? error
-      );
-    }
+  const rootEntry = entries.find((entry) => entry.path === "/");
+  assert(rootEntry, "Root directory entry should exist");
+  assert.strictEqual(rootEntry?.type, "dir");
+
+  const firstFile = entries.find((entry) => entry.type === "file");
+  if (firstFile) {
+    const fileBytes = fatfs.readFile(firstFile.path);
+    assert.strictEqual(
+      fileBytes.length,
+      firstFile.size,
+      "readFile returns the declared file size"
+    );
+  } else {
+    console.info("No pre-existing files to read");
   }
 
-  if (!lastRead) {
-    const testPath = "/fatfs-test.txt";
-    const testPayload = Buffer.from(
-      "fatfs wasm smoke payload " + Date.now().toString()
-    );
-    fatfs.writeFile(testPath, testPayload);
-    const roundTrip = fatfs.readFile(testPath);
-    console.log(
-      "Created test file",
-      testPath,
-      "read back",
-      roundTrip.length,
-      "bytes ->",
-      Buffer.from(roundTrip).toString("utf8")
-    );
-  }
+  const testDir = "/fatfs-test";
+  fatfs.mkdir(testDir);
+  const dirList = fatfs.list(testDir);
+  const normalizedTestDir = normalizeEntryPath(testDir);
+  const dirEntry = dirList.find((entry) => entry.path === normalizedTestDir);
+  assert(dirEntry, "Directory listing should include the directory itself");
+  assert.strictEqual(dirEntry?.type, "dir", "Directory entry should be marked as 'dir'");
+
+  const testFile = `${testDir}/smoke.txt`;
+  const payload = Buffer.from(`fatfs test payload ${Date.now().toString()}`);
+  fatfs.writeFile(testFile, payload);
+  const roundTrip = fatfs.readFile(testFile);
+  assert.strictEqual(Buffer.compare(roundTrip, payload), 0, "write/read round trip");
+  const afterWriteUsage = fatfs.getUsage();
+  assert.strictEqual(
+    afterWriteUsage.capacityBytes,
+    totalBytes,
+    "Capacity should not change after writes"
+  );
+  assert.ok(
+    afterWriteUsage.usedBytes >= usage.usedBytes,
+    "Used bytes should not shrink after writes"
+  );
+  assert.strictEqual(
+    afterWriteUsage.usedBytes + afterWriteUsage.freeBytes,
+    totalBytes,
+    "Usage should still sum to the volume size"
+  );
+
+  const renamed = `${testDir}/smoke-renamed.txt`;
+  fatfs.rename(testFile, renamed);
+  const renamedBytes = fatfs.readFile(renamed);
+  assert.strictEqual(Buffer.compare(renamedBytes, payload), 0, "rename preserves contents");
+
+  fatfs.deleteFile(renamed);
+  assert.throws(
+    () => fatfs.readFile(renamed),
+    undefined,
+    "Deleted file should not be readable"
+  );
+
+  const afterDeleteUsage = fatfs.getUsage();
+  assert.strictEqual(
+    afterDeleteUsage.capacityBytes,
+    totalBytes,
+    "Capacity should remain constant after deletion"
+  );
+  assert.ok(
+    afterDeleteUsage.usedBytes <= afterWriteUsage.usedBytes,
+    "Deleting a file should reduce used bytes"
+  );
 
   const exported = fatfs.toImage();
   console.log("Exported image size after inspection", exported.length);
+  assert.strictEqual(
+    exported.length,
+    totalBytes,
+    "Exported image should cover the full volume"
+  );
+  console.log("FatFS smoke test completed successfully");
 } catch (error) {
   console.error(error);
   process.exit(1);

@@ -191,6 +191,66 @@ static int fatfsjs_join_path(const char *base, const char *leaf, char *out,
                : 0;
 }
 
+static bool fatfsjs_is_printable(const char *value) {
+    if (!value) {
+        return false;
+    }
+    for (const unsigned char *ch = (const unsigned char *)value; *ch; ++ch) {
+        if (*ch < 0x20 || *ch > 0x7E) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void fatfsjs_build_short_name(const char *source, char *dest,
+                                     size_t dest_len) {
+    if (!source || dest_len == 0) {
+        return;
+    }
+
+    char base[9] = {0};
+    char ext[4] = {0};
+    memcpy(base, source, 8);
+    memcpy(ext, source + 8, 3);
+
+    size_t base_len = strnlen(base, sizeof(base));
+    while (base_len > 0 && base[base_len - 1] == ' ') {
+        base[--base_len] = '\0';
+    }
+
+    size_t ext_len = strnlen(ext, sizeof(ext));
+    while (ext_len > 0 && ext[ext_len - 1] == ' ') {
+        ext[--ext_len] = '\0';
+    }
+
+    if (base_len == 0) {
+        dest[0] = '\0';
+        return;
+    }
+
+    if (ext_len > 0) {
+        snprintf(dest, dest_len, "%s.%s", base, ext);
+    } else {
+        snprintf(dest, dest_len, "%s", base);
+    }
+}
+
+static void fatfsjs_extract_entry_name(const FILINFO *info, char *out,
+                                       size_t out_len) {
+    if (!info || out_len == 0) {
+        return;
+    }
+
+    if (info->fname[0] && fatfsjs_is_printable(info->fname)) {
+        strncpy(out, info->fname, out_len - 1);
+        out[out_len - 1] = '\0';
+        return;
+    }
+
+    fatfsjs_build_short_name(info->altname, out, out_len);
+}
+
 static int fatfsjs_emit_entry(const char *path, FSIZE_t size, char type,
                               char **cursor, const char *end) {
     const char *display = path;
@@ -218,23 +278,33 @@ static int fatfsjs_emit_entry(const char *path, FSIZE_t size, char type,
 static int fatfsjs_walk(const char *path, char **cursor, const char *end) {
     DIR dir;
     FILINFO info;
-    memset(&info, 0, sizeof(info));
 
-    FRESULT fr = f_opendir(&dir, path);
+    const char *opendir_path = (strcmp(path, "/") == 0) ? "" : path;
+    FRESULT fr = f_opendir(&dir, opendir_path);
     if (fr != FR_OK) {
         return fatfsjs_result(fr);
     }
 
     while (true) {
+        memset(&info, 0, sizeof(info));
         fr = f_readdir(&dir, &info);
         if (fr != FR_OK) {
             f_closedir(&dir);
             return fatfsjs_result(fr);
         }
-        if (info.fname[0] == '\0') {
+        char entry_name[FATFSJS_PATH_MAX];
+        fatfsjs_extract_entry_name(&info, entry_name, sizeof(entry_name));
+        const char *name = entry_name;
+        if (info.fattrib == 0x0F) {
+            continue;
+        }
+        if (!info.fname[0] && !info.altname[0]) {
             break;
         }
-        const char *name = info.fname;
+        if (!name || name[0] == '\0') {
+            continue;
+        }
+
         if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
             continue;
         }
@@ -531,7 +601,17 @@ int fatfsjs_list(const char *path, uint32_t buffer_ptr, uint32_t buffer_len) {
 
     FILINFO info;
     memset(&info, 0, sizeof(info));
-    FRESULT fr = f_stat(target, &info);
+    const char *stat_target = target;
+    if (stat_target[0] == '/') {
+        stat_target++;
+    }
+    FRESULT fr;
+    if (strcmp(target, "/") == 0) {
+        info.fattrib = AM_DIR;
+        fr = FR_OK;
+    } else {
+        fr = f_stat(stat_target, &info);
+    }
     if (fr != FR_OK) {
         return fatfsjs_result(fr);
     }

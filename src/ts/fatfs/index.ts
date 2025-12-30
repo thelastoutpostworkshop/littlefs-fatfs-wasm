@@ -4,6 +4,7 @@ const DEFAULT_BLOCK_SIZE = 512;
 const DEFAULT_BLOCK_COUNT = 1024;
 const INITIAL_LIST_BUFFER = 4096;
 const FATFS_ERR_NOT_ENOUGH_CORE = -17;
+export const FAT_MOUNT = "/fatfs";
 
 export interface FatFSEntry {
   path: string;
@@ -139,9 +140,9 @@ class FatFSClient implements FatFS {
     this.assertOk(result, "format filesystem");
   }
 
-  list(path = "/"): FatFSEntry[] {
-    const normalizedPath = normalizeListPath(path);
-    const pathPtr = this.allocString(normalizedPath);
+  list(path = FAT_MOUNT): FatFSEntry[] {
+    const wasmPath = toWasmPath(path);
+    const pathPtr = this.allocString(wasmPath);
     try {
       let capacity = this.listBufferSize;
       while (true) {
@@ -158,7 +159,11 @@ class FatFSClient implements FatFS {
             return [];
           }
           const payload = this.decoder.decode(this.heapU8.subarray(ptr, ptr + used));
-          return parseListPayload(payload);
+          const entries = parseListPayload(payload);
+          return entries.map((entry) => ({
+            ...entry,
+            path: publicFatfsPath(entry.path)
+          }));
         } finally {
           this.exports.free(ptr);
         }
@@ -169,24 +174,25 @@ class FatFSClient implements FatFS {
   }
 
   mkdir(path: string): void {
-    const normalizedPath = normalizePath(path);
-    const pathPtr = this.allocString(normalizedPath);
+    const publicPath = normalizeFatfsPath(path);
+    const wasmPath = toWasmPath(publicPath);
+    const pathPtr = this.allocString(wasmPath);
     try {
       const result = this.exports.fatfsjs_mkdir(pathPtr);
-      this.assertOk(result, `mkdir "${normalizedPath}"`);
+      this.assertOk(result, `mkdir "${publicPath}"`);
     } finally {
       this.exports.free(pathPtr);
     }
   }
 
   rename(oldPath: string, newPath: string): void {
-    const from = normalizePath(oldPath);
-    const to = normalizePath(newPath);
-    const fromPtr = this.allocString(from);
-    const toPtr = this.allocString(to);
+    const fromPath = normalizeFatfsPath(oldPath);
+    const toPath = normalizeFatfsPath(newPath);
+    const fromPtr = this.allocString(toWasmPath(fromPath));
+    const toPtr = this.allocString(toWasmPath(toPath));
     try {
       const result = this.exports.fatfsjs_rename(fromPtr, toPtr);
-      this.assertOk(result, `rename "${from}" -> "${to}"`);
+      this.assertOk(result, `rename "${fromPath}" -> "${toPath}"`);
     } finally {
       this.exports.free(fromPtr);
       this.exports.free(toPtr);
@@ -194,18 +200,19 @@ class FatFSClient implements FatFS {
   }
 
   readFile(path: string): Uint8Array {
-    const normalizedPath = normalizePath(path);
-    const pathPtr = this.allocString(normalizedPath);
+    const publicPath = normalizeFatfsPath(path);
+    const wasmPath = toWasmPath(publicPath);
+    const pathPtr = this.allocString(wasmPath);
     try {
       const size = this.exports.fatfsjs_file_size(pathPtr);
-      this.assertOk(size, `stat file "${normalizedPath}"`);
+      this.assertOk(size, `stat file "${publicPath}"`);
       if (size === 0) {
         return new Uint8Array();
       }
       const dataPtr = this.alloc(size);
       try {
         const read = this.exports.fatfsjs_read_file(pathPtr, dataPtr, size);
-        this.assertOk(read, `read file "${normalizedPath}"`);
+        this.assertOk(read, `read file "${publicPath}"`);
         return this.heapU8.slice(dataPtr, dataPtr + size);
       } finally {
         this.exports.free(dataPtr);
@@ -216,16 +223,17 @@ class FatFSClient implements FatFS {
   }
 
   writeFile(path: string, data: FileSource): void {
-    const normalizedPath = normalizePath(path);
+    const publicPath = normalizeFatfsPath(path);
+    const wasmPath = toWasmPath(publicPath);
     const payload = asUint8Array(data, this.encoder);
-    const pathPtr = this.allocString(normalizedPath);
+    const pathPtr = this.allocString(wasmPath);
     const dataPtr = this.alloc(payload.length);
     try {
       if (payload.length > 0 && dataPtr) {
         this.heapU8.set(payload, dataPtr);
       }
       const result = this.exports.fatfsjs_write_file(pathPtr, payload.length > 0 ? dataPtr : 0, payload.length);
-      this.assertOk(result, `write file "${normalizedPath}"`);
+      this.assertOk(result, `write file "${publicPath}"`);
     } finally {
       if (dataPtr) {
         this.exports.free(dataPtr);
@@ -235,11 +243,12 @@ class FatFSClient implements FatFS {
   }
 
   deleteFile(path: string): void {
-    const normalizedPath = normalizePath(path);
-    const pathPtr = this.allocString(normalizedPath);
+    const publicPath = normalizeFatfsPath(path);
+    const wasmPath = toWasmPath(publicPath);
+    const pathPtr = this.allocString(wasmPath);
     try {
       const result = this.exports.fatfsjs_delete_file(pathPtr);
-      this.assertOk(result, `delete file "${normalizedPath}"`);
+      this.assertOk(result, `delete file "${publicPath}"`);
     } finally {
       this.exports.free(pathPtr);
     }
@@ -262,7 +271,7 @@ class FatFSClient implements FatFS {
 
   getUsage(): FileSystemUsage {
     const capacityBytes = this.ensureStorageSize();
-    const entries = this.list("/");
+    const entries = this.list();
     const usedBytes = entries.reduce((acc, entry) => (entry.type === "file" ? acc + entry.size : acc), 0);
     const freeBytes = capacityBytes > usedBytes ? capacityBytes - usedBytes : 0;
     return {
@@ -362,25 +371,53 @@ function parseListPayload(payload: string): FatFSEntry[] {
         type: rawType === "d" ? "dir" : "file"
       };
     });
-  }
-
-function normalizePath(input: string): string {
-  const value = input.trim().replace(/\\/g, "/");
-  const collapsed = value.replace(/\/{2,}/g, "/");
-  const withoutRoot = collapsed.replace(/^\/+/, "");
-  if (!withoutRoot) {
-    throw new Error('Path must point to a file (e.g. "/docs/readme.txt")');
-  }
-  const withoutTrailing = withoutRoot.replace(/\/+$/g, "");
-  return "/" + withoutTrailing;
 }
 
-function normalizeListPath(input?: string): string {
-  const trimmed = input?.trim() ?? "";
-  if (trimmed === "" || trimmed === "/") {
+function normalizePublicPath(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
     return "/";
   }
-  return normalizePath(trimmed);
+  const replaced = trimmed.replace(/\\/g, "/");
+  const collapsed = replaced.replace(/\/{2,}/g, "/");
+  const parts = collapsed.split("/").filter(Boolean);
+  if (parts.some((segment) => segment === "..")) {
+    throw new Error("Path must not contain '..'");
+  }
+  if (parts.length === 0) {
+    return "/";
+  }
+  return `/${parts.join("/")}`;
+}
+
+function normalizeFatfsPath(input: string): string {
+  const normalized = normalizePublicPath(input);
+  if (normalized === "/" || normalized === FAT_MOUNT) {
+    return FAT_MOUNT;
+  }
+  if (normalized.startsWith(`${FAT_MOUNT}/`)) {
+    return normalized;
+  }
+  return `${FAT_MOUNT}${normalized}`;
+}
+
+function toWasmPath(input: string): string {
+  const fatfsPath = normalizeFatfsPath(input);
+  if (fatfsPath === FAT_MOUNT) {
+    return "/";
+  }
+  return fatfsPath.slice(FAT_MOUNT.length);
+}
+
+function publicFatfsPath(wasmPath: string): string {
+  if (!wasmPath) {
+    return FAT_MOUNT;
+  }
+  const normalized = wasmPath.startsWith("/") ? wasmPath : `/${wasmPath}`;
+  if (normalized === "/") {
+    return FAT_MOUNT;
+  }
+  return `${FAT_MOUNT}${normalized}`;
 }
 
 function asUint8Array(source: FileSource, encoder: TextEncoder): Uint8Array {
