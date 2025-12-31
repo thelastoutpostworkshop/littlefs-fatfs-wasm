@@ -108,9 +108,7 @@ class FatFSClient implements FatFS {
 
   list(path: string = FAT_MOUNT): FatFSEntry[] {
     const normalized = normalizeMountPath(path);
-    if (!isRootPath(normalized)) {
-      throw new FatFSError("Only the FAT16 root directory is supported", FATFS_ERR_UNSUPPORTED);
-    }
+    const basePath = normalized;
 
     const pathPtr = this.allocString(normalized);
     let capacity = this.listBufferSize;
@@ -132,7 +130,7 @@ class FatFSClient implements FatFS {
           const payload = this.decoder.decode(this.heapU8.subarray(ptr, ptr + used));
           return parseListPayload(payload).map((entry) => ({
             ...entry,
-            path: withMountPrefix(entry.path),
+            path: joinListPath(basePath, entry.path),
           }));
         } finally {
           this.exports.free(ptr);
@@ -145,7 +143,7 @@ class FatFSClient implements FatFS {
 
   readFile(path: string): Uint8Array {
     const normalized = normalizeMountPath(path);
-    if (isRootPath(normalized)) {
+    if (normalized === FAT_MOUNT) {
       throw new FatFSError("Path must point to a file", FATFS_ERR_UNSUPPORTED);
     }
 
@@ -329,16 +327,13 @@ function normalizeMountPath(input?: string): string {
   return `${FAT_MOUNT}/${collapsed}`;
 }
 
-function isRootPath(path: string): boolean {
-  return path === FAT_MOUNT;
-}
-
-function withMountPrefix(entryPath: string): string {
+function joinListPath(basePath: string, entryPath: string): string {
+  const base = basePath.replace(/\/+$/, "");
   if (!entryPath || entryPath === "/") {
-    return FAT_MOUNT;
+    return base || FAT_MOUNT;
   }
   const trimmed = entryPath.replace(/^\/+/, "");
-  return `${FAT_MOUNT}/${trimmed}`;
+  return base === FAT_MOUNT ? `${FAT_MOUNT}/${trimmed}` : `${base}/${trimmed}`;
 }
 
 function asBinaryUint8Array(source: BinarySource): Uint8Array {

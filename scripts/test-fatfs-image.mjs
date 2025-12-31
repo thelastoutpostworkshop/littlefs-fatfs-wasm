@@ -41,3 +41,16 @@ console.log("list:", list);
 const bytes = fs.readFile("/fatfs/info.txt");
 const text = new TextDecoder().decode(bytes);
 console.log("info.txt:", JSON.stringify(text));
+
+const firstDir = list.find((entry) => entry.type === "dir");
+if (firstDir) {
+  const dirList = fs.list(firstDir.path);
+  console.log(`list (${firstDir.path}):`, dirList);
+
+  const firstFile = dirList.find((entry) => entry.type === "file");
+  if (firstFile) {
+    const fileBytes = fs.readFile(firstFile.path);
+    const fileText = new TextDecoder().decode(fileBytes);
+    console.log(`${firstFile.path}:`, JSON.stringify(fileText));
+  }
+}
