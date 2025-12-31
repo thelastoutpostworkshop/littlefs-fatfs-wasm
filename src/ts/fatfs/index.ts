@@ -3,8 +3,10 @@ import type { BinarySource, FileSource, FileSystemUsage } from "../shared/types"
 export const FAT_MOUNT = "/fatfs";
 
 const INITIAL_LIST_BUFFER = 4096;
-const FATFS_ERR_NOSPC = -5;
-const FATFS_ERR_UNSUPPORTED = -6;
+const DEFAULT_BLOCK_SIZE = 4096;
+const DEFAULT_BLOCK_COUNT = 128;
+const FATFS_ERR_INVAL = -1;
+const FATFS_ERR_NOSPC = -3;
 
 export interface FatFSEntry {
   path: string;
@@ -13,6 +15,9 @@ export interface FatFSEntry {
 }
 
 export interface FatFSOptions {
+  blockSize?: number;
+  blockCount?: number;
+  formatOnInit?: boolean;
   wasmURL?: string | URL;
 }
 
@@ -36,6 +41,8 @@ interface FatFSExports {
   fatfsjs_write_file(pathPtr: number, dataPtr: number, dataLen: number): number;
   fatfsjs_delete_file(pathPtr: number): number;
   fatfsjs_list(pathPtr: number, bufferPtr: number, bufferLen: number): number;
+  fatfsjs_mkdir(pathPtr: number): number;
+  fatfsjs_rename(oldPathPtr: number, newPathPtr: number): number;
   fatfsjs_file_size(pathPtr: number): number;
   fatfsjs_read_file(
     pathPtr: number,
@@ -67,6 +74,14 @@ export async function createFatFSFromImage(
   const exports = await instantiateFatFSModule(wasmURL);
   const bytes = asBinaryUint8Array(image);
 
+  const blockSize = options.blockSize ?? DEFAULT_BLOCK_SIZE;
+  if (blockSize !== DEFAULT_BLOCK_SIZE) {
+    throw new Error(`blockSize must be ${DEFAULT_BLOCK_SIZE}`);
+  }
+  if (options.blockCount && options.blockCount * blockSize !== bytes.length) {
+    throw new Error("Image size must equal blockSize * blockCount");
+  }
+
   const heap = new Uint8Array(exports.memory.buffer);
   const imagePtr = exports.malloc(bytes.length || 1);
   if (!imagePtr) {
@@ -87,11 +102,34 @@ export async function createFatFSFromImage(
   return new FatFSClient(exports);
 }
 
-export async function createFatFS(_: FatFSOptions = {}): Promise<FatFS> {
-  throw new FatFSError(
-    "FAT16 reader is read-only; use createFatFSFromImage()",
-    FATFS_ERR_UNSUPPORTED
-  );
+export async function createFatFS(options: FatFSOptions = {}): Promise<FatFS> {
+  console.info("[fatfs-wasm] createFatFS() starting", options);
+  const wasmURL = options.wasmURL ?? new URL("./fatfs.wasm", import.meta.url);
+  const exports = await instantiateFatFSModule(wasmURL);
+
+  const blockSize = options.blockSize ?? DEFAULT_BLOCK_SIZE;
+  const blockCount = options.blockCount ?? DEFAULT_BLOCK_COUNT;
+  if (blockSize !== DEFAULT_BLOCK_SIZE) {
+    throw new Error(`blockSize must be ${DEFAULT_BLOCK_SIZE}`);
+  }
+  if (!Number.isFinite(blockCount) || blockCount <= 0) {
+    throw new Error("blockCount must be a positive integer");
+  }
+
+  const initResult = exports.fatfsjs_init(blockSize, blockCount);
+  if (initResult < 0) {
+    throw new FatFSError("Failed to initialize FatFS", initResult);
+  }
+
+  if (options.formatOnInit) {
+    const formatResult = exports.fatfsjs_format();
+    if (formatResult < 0) {
+      throw new FatFSError("Failed to format filesystem", formatResult);
+    }
+  }
+
+  console.info("[fatfs-wasm] Filesystem initialized");
+  return new FatFSClient(exports);
 }
 
 class FatFSClient implements FatFS {
@@ -144,7 +182,7 @@ class FatFSClient implements FatFS {
   readFile(path: string): Uint8Array {
     const normalized = normalizeMountPath(path);
     if (normalized === FAT_MOUNT) {
-      throw new FatFSError("Path must point to a file", FATFS_ERR_UNSUPPORTED);
+      throw new FatFSError("Path must point to a file", FATFS_ERR_INVAL);
     }
 
     const pathPtr = this.allocString(normalized);
@@ -199,23 +237,72 @@ class FatFSClient implements FatFS {
   }
 
   format(): void {
-    throw new FatFSError("FAT16 reader is read-only", FATFS_ERR_UNSUPPORTED);
+    const result = this.exports.fatfsjs_format();
+    this.assertOk(result, "format filesystem");
   }
 
-  writeFile(_path: string, _data: FileSource): void {
-    throw new FatFSError("FAT16 reader is read-only", FATFS_ERR_UNSUPPORTED);
+  writeFile(path: string, data: FileSource): void {
+    const normalized = normalizeMountPath(path);
+    if (normalized === FAT_MOUNT) {
+      throw new FatFSError("Path must point to a file", FATFS_ERR_INVAL);
+    }
+    const payload = asUint8Array(data, this.encoder);
+    const pathPtr = this.allocString(normalized);
+    const dataPtr = payload.length ? this.alloc(payload.length) : 0;
+    try {
+      if (payload.length > 0) {
+        this.heapU8.set(payload, dataPtr);
+      }
+      const result = this.exports.fatfsjs_write_file(pathPtr, dataPtr, payload.length);
+      this.assertOk(result, `write file "${normalized}"`);
+    } finally {
+      if (dataPtr) {
+        this.exports.free(dataPtr);
+      }
+      this.exports.free(pathPtr);
+    }
   }
 
-  deleteFile(_path: string): void {
-    throw new FatFSError("FAT16 reader is read-only", FATFS_ERR_UNSUPPORTED);
+  deleteFile(path: string): void {
+    const normalized = normalizeMountPath(path);
+    if (normalized === FAT_MOUNT) {
+      throw new FatFSError("Path must point to a file", FATFS_ERR_INVAL);
+    }
+    const pathPtr = this.allocString(normalized);
+    try {
+      const result = this.exports.fatfsjs_delete_file(pathPtr);
+      this.assertOk(result, `delete file "${normalized}"`);
+    } finally {
+      this.exports.free(pathPtr);
+    }
   }
 
-  mkdir(_path: string): void {
-    throw new FatFSError("FAT16 reader is read-only", FATFS_ERR_UNSUPPORTED);
+  mkdir(path: string): void {
+    const normalized = normalizeMountPath(path);
+    if (normalized === FAT_MOUNT) {
+      return;
+    }
+    const pathPtr = this.allocString(normalized);
+    try {
+      const result = this.exports.fatfsjs_mkdir(pathPtr);
+      this.assertOk(result, `mkdir "${normalized}"`);
+    } finally {
+      this.exports.free(pathPtr);
+    }
   }
 
-  rename(_oldPath: string, _newPath: string): void {
-    throw new FatFSError("FAT16 reader is read-only", FATFS_ERR_UNSUPPORTED);
+  rename(oldPath: string, newPath: string): void {
+    const from = normalizeMountPath(oldPath);
+    const to = normalizeMountPath(newPath);
+    const fromPtr = this.allocString(from);
+    const toPtr = this.allocString(to);
+    try {
+      const result = this.exports.fatfsjs_rename(fromPtr, toPtr);
+      this.assertOk(result, `rename "${from}" -> "${to}"`);
+    } finally {
+      this.exports.free(fromPtr);
+      this.exports.free(toPtr);
+    }
   }
 
   private refreshHeap(): void {
@@ -334,6 +421,19 @@ function joinListPath(basePath: string, entryPath: string): string {
   }
   const trimmed = entryPath.replace(/^\/+/, "");
   return base === FAT_MOUNT ? `${FAT_MOUNT}/${trimmed}` : `${base}/${trimmed}`;
+}
+
+function asUint8Array(source: FileSource, encoder: TextEncoder): Uint8Array {
+  if (typeof source === "string") {
+    return encoder.encode(source);
+  }
+  if (source instanceof Uint8Array) {
+    return source;
+  }
+  if (source instanceof ArrayBuffer) {
+    return new Uint8Array(source);
+  }
+  throw new Error("Unsupported file payload type");
 }
 
 function asBinaryUint8Array(source: BinarySource): Uint8Array {
