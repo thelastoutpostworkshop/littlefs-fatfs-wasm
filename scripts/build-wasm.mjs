@@ -29,11 +29,9 @@ const targets = [
     outputDir: join(distDir, "fatfs"),
     outputWasm: join(distDir, "fatfs", "fatfs.wasm"),
     sources: [
-      join(projectRoot, "src", "c", "fatfs_wasm.c"),
-      join(projectRoot, "third_party", "fatfs", "ff.c"),
-      join(projectRoot, "third_party", "fatfs", "ffunicode.c")
+      join(projectRoot, "src", "c", "fatfs_wasm.c")
     ],
-    includes: [join(projectRoot, "third_party", "fatfs")],
+    includes: [],
     exports:
       "['_fatfsjs_init','_fatfsjs_init_from_image','_fatfsjs_format','_fatfsjs_write_file','_fatfsjs_delete_file','_fatfsjs_list','_fatfsjs_file_size','_fatfsjs_read_file','_fatfsjs_export_image','_fatfsjs_storage_size','_malloc','_free']"
   },
