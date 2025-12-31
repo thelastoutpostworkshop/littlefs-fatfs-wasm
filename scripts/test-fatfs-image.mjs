@@ -76,6 +76,22 @@ async function main() {
   scratch.deleteFile("/fatfs/test_dir/renamed.txt");
   console.log("scratch usage:", scratch.getUsage());
   console.log("scratch image bytes:", scratch.toImage().length);
+
+  scratch.writeFile("/fatfs/wipe_check.txt", "wipe me");
+  scratch.format();
+  const wipedList = scratch.list("/fatfs");
+  console.log("after format list:", wipedList);
+  if (wipedList.length !== 0) {
+    throw new Error("format() did not wipe filesystem contents");
+  }
+
+  const wipedImage = scratch.toImage();
+  const remount = await createFatFSFromImage(wipedImage, { wasmURL });
+  const remountList = remount.list("/fatfs");
+  console.log("remount list:", remountList);
+  if (remountList.length !== 0) {
+    throw new Error("formatted image failed to mount cleanly");
+  }
 }
 
 try {
