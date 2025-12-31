@@ -30,48 +30,59 @@ globalThis.fetch = async (input, init) => {
   return originalFetch(input, init);
 };
 
-const { createFatFS, createFatFSFromImage, FAT_MOUNT } = await import(moduleUrl.href);
+async function main() {
+  const { createFatFS, createFatFSFromImage, FAT_MOUNT } = await import(moduleUrl.href);
 
-const image = await readFile(imagePath);
-const fs = await createFatFSFromImage(image, { wasmURL });
+  const image = await readFile(imagePath);
+  const fs = await createFatFSFromImage(image, { wasmURL });
 
-const list = fs.list(FAT_MOUNT);
-console.log("list:", list);
+  const list = fs.list(FAT_MOUNT);
+  console.log("list:", list);
 
-const bytes = fs.readFile("/fatfs/info.txt");
-const text = new TextDecoder().decode(bytes);
-console.log("info.txt:", JSON.stringify(text));
+  const bytes = fs.readFile("/fatfs/info.txt");
+  const text = new TextDecoder().decode(bytes);
+  console.log("info.txt:", JSON.stringify(text));
 
-const usage = fs.getUsage();
-console.log("usage:", usage);
+  const usage = fs.getUsage();
+  console.log("usage:", usage);
 
-const exported = fs.toImage();
-console.log("exported bytes:", exported.length);
+  const exported = fs.toImage();
+  console.log("exported bytes:", exported.length);
 
-const firstDir = list.find((entry) => entry.type === "dir");
-if (firstDir) {
-  const dirList = fs.list(firstDir.path);
-  console.log(`list (${firstDir.path}):`, dirList);
+  const firstDir = list.find((entry) => entry.type === "dir");
+  if (firstDir) {
+    const dirList = fs.list(firstDir.path);
+    console.log(`list (${firstDir.path}):`, dirList);
 
-  const firstFile = dirList.find((entry) => entry.type === "file");
-  if (firstFile) {
-    const fileBytes = fs.readFile(firstFile.path);
-    const fileText = new TextDecoder().decode(fileBytes);
-    console.log(`${firstFile.path}:`, JSON.stringify(fileText));
+    const firstFile = dirList.find((entry) => entry.type === "file");
+    if (firstFile) {
+      const fileBytes = fs.readFile(firstFile.path);
+      const fileText = new TextDecoder().decode(fileBytes);
+      console.log(`${firstFile.path}:`, JSON.stringify(fileText));
+    }
   }
+
+  const scratch = await createFatFS({ wasmURL, formatOnInit: true });
+  scratch.format();
+  scratch.mkdir("/fatfs/test_dir");
+  scratch.writeFile("/fatfs/test_dir/hello.txt", "fatfs wasm test");
+  scratch.writeFile("/fatfs/test_dir/rename_me.txt", "rename me");
+  scratch.rename("/fatfs/test_dir/rename_me.txt", "/fatfs/test_dir/renamed.txt");
+
+  const scratchList = scratch.list("/fatfs");
+  console.log("scratch list:", scratchList);
+  const readBack = scratch.readFile("/fatfs/test_dir/hello.txt");
+  console.log("scratch read:", JSON.stringify(new TextDecoder().decode(readBack)));
+  scratch.deleteFile("/fatfs/test_dir/renamed.txt");
+  console.log("scratch usage:", scratch.getUsage());
+  console.log("scratch image bytes:", scratch.toImage().length);
 }
 
-const scratch = await createFatFS({ wasmURL, formatOnInit: true });
-scratch.format();
-scratch.mkdir("/fatfs/test_dir");
-scratch.writeFile("/fatfs/test_dir/hello.txt", "fatfs wasm test");
-scratch.writeFile("/fatfs/test_dir/rename_me.txt", "rename me");
-scratch.rename("/fatfs/test_dir/rename_me.txt", "/fatfs/test_dir/renamed.txt");
-
-const scratchList = scratch.list("/fatfs");
-console.log("scratch list:", scratchList);
-const readBack = scratch.readFile("/fatfs/test_dir/hello.txt");
-console.log("scratch read:", JSON.stringify(new TextDecoder().decode(readBack)));
-scratch.deleteFile("/fatfs/test_dir/renamed.txt");
-console.log("scratch usage:", scratch.getUsage());
-console.log("scratch image bytes:", scratch.toImage().length);
+try {
+  await main();
+  console.log("RESULT: PASS");
+} catch (error) {
+  console.error("RESULT: FAIL");
+  console.error(error);
+  process.exitCode = 1;
+}
