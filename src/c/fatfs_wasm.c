@@ -23,6 +23,7 @@ static uint8_t *g_storage = NULL;
 static uint32_t g_sector_count = 0;
 static uint32_t g_volume_sector_count = 0;
 static uint32_t g_sector_offset = 0;
+static bool g_boot_mirror = false;
 static uint32_t g_total_bytes = 0;
 
 static int fatfsjs_result(FRESULT res) {
@@ -70,6 +71,7 @@ static bool fatfsjs_is_boot_sector(const uint8_t *sector) {
 static void fatfsjs_detect_offset(void) {
     g_sector_offset = 0;
     g_volume_sector_count = g_sector_count;
+    g_boot_mirror = false;
     if (!g_storage || g_sector_count < 2) {
         return;
     }
@@ -81,9 +83,11 @@ static void fatfsjs_detect_offset(void) {
         g_sector_offset = 1;
     } else if (boot0 && boot1) {
         g_sector_offset = 1;
+        g_boot_mirror = true;
     }
     if (g_sector_offset >= g_sector_count) {
         g_sector_offset = 0;
+        g_boot_mirror = false;
     }
     g_volume_sector_count = g_sector_count - g_sector_offset;
 }
@@ -285,7 +289,7 @@ static int fatfsjs_ensure_parent_dirs(const char *ff_path) {
 
 static int fatfsjs_format_internal(void) {
     MKFS_PARM options;
-    options.fmt = FM_FAT;
+    options.fmt = (FM_FAT | FM_SFD);
     options.n_fat = 0;
     options.align = 0;
     options.n_root = 0;
@@ -310,6 +314,7 @@ static void fatfsjs_release(void) {
     g_sector_count = 0;
     g_volume_sector_count = 0;
     g_sector_offset = 0;
+    g_boot_mirror = false;
     g_total_bytes = 0;
     memset(&g_fs, 0, sizeof(g_fs));
 }
@@ -336,6 +341,7 @@ static int fatfsjs_configure(uint32_t block_size, uint32_t block_count,
     g_sector_count = block_count;
     g_volume_sector_count = block_count;
     g_sector_offset = 0;
+    g_boot_mirror = false;
     g_total_bytes = (uint32_t)total;
     return 0;
 }
@@ -403,6 +409,9 @@ DRESULT disk_write(BYTE pdrv, const BYTE *buff, LBA_t sector, UINT count) {
         return RES_PARERR;
     }
     memcpy(g_storage + offset, buff, (size_t)length);
+    if (g_boot_mirror && sector == 0) {
+        memcpy(g_storage, buff, FATFSJS_SECTOR_SIZE);
+    }
     return RES_OK;
 }
 

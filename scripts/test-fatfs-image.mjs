@@ -13,6 +13,34 @@ if (typeof originalFetch !== "function") {
   throw new Error("fetch is not available in this Node runtime");
 }
 
+function isBootSector(bytes, offset) {
+  if (offset + 512 > bytes.length) {
+    return false;
+  }
+  const jump = bytes[offset];
+  if (jump !== 0xeb && jump !== 0xe9) {
+    return false;
+  }
+  const sig = bytes[offset + 510] | (bytes[offset + 511] << 8);
+  if (sig !== 0xaa55) {
+    return false;
+  }
+  const bps = bytes[offset + 11] | (bytes[offset + 12] << 8);
+  return bps === 4096;
+}
+
+function sectorsEqual(bytes, offsetA, offsetB, length) {
+  if (offsetA + length > bytes.length || offsetB + length > bytes.length) {
+    return false;
+  }
+  for (let i = 0; i < length; i++) {
+    if (bytes[offsetA + i] !== bytes[offsetB + i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
 globalThis.fetch = async (input, init) => {
   const url =
     typeof input === "string"
@@ -31,9 +59,10 @@ globalThis.fetch = async (input, init) => {
 };
 
 async function main() {
-  const { createFatFS, createFatFSFromImage, FAT_MOUNT } = await import(moduleUrl.href);
+const { createFatFS, createFatFSFromImage, FAT_MOUNT } = await import(moduleUrl.href);
 
   const image = await readFile(imagePath);
+  const hasBootMirror = isBootSector(image, 0) && isBootSector(image, 4096);
   const fs = await createFatFSFromImage(image, { wasmURL });
 
   const list = fs.list(FAT_MOUNT);
@@ -59,6 +88,22 @@ async function main() {
       const fileBytes = fs.readFile(firstFile.path);
       const fileText = new TextDecoder().decode(fileBytes);
       console.log(`${firstFile.path}:`, JSON.stringify(fileText));
+    }
+  }
+
+  fs.format();
+  const formattedImage = fs.toImage();
+  const formattedRemount = await createFatFSFromImage(formattedImage, { wasmURL });
+  const formattedList = formattedRemount.list(FAT_MOUNT);
+  console.log("formatted remount list:", formattedList);
+  if (formattedList.length !== 0) {
+    throw new Error("formatted image did not mount cleanly");
+  }
+  if (hasBootMirror) {
+    const mirrored = sectorsEqual(formattedImage, 0, 4096, 4096);
+    console.log("formatted boot mirror:", mirrored);
+    if (!mirrored) {
+      throw new Error("formatted image boot mirror mismatch");
     }
   }
 
