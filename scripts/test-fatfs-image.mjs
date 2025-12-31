@@ -1,0 +1,43 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+const repoRoot = process.cwd();
+const wasmURL = pathToFileURL(path.join(repoRoot, "dist", "fatfs", "fatfs.wasm"));
+const moduleUrl = pathToFileURL(path.join(repoRoot, "dist", "fatfs", "index.js"));
+
+const imagePath = process.argv[2] ?? "C:\\Users\\charles\\Downloads\\fatfs_good.bin";
+
+const originalFetch = globalThis.fetch;
+if (typeof originalFetch !== "function") {
+  throw new Error("fetch is not available in this Node runtime");
+}
+
+globalThis.fetch = async (input, init) => {
+  const url =
+    typeof input === "string"
+      ? new URL(input)
+      : input instanceof URL
+      ? input
+      : new URL(input.url);
+
+  if (url.protocol === "file:") {
+    const filePath = fileURLToPath(url);
+    const data = await readFile(filePath);
+    return new Response(data, { status: 200, headers: { "Content-Type": "application/wasm" } });
+  }
+
+  return originalFetch(input, init);
+};
+
+const { createFatFSFromImage, FAT_MOUNT } = await import(moduleUrl.href);
+
+const image = await readFile(imagePath);
+const fs = await createFatFSFromImage(image, { wasmURL });
+
+const list = fs.list(FAT_MOUNT);
+console.log("list:", list);
+
+const bytes = fs.readFile("/fatfs/info.txt");
+const text = new TextDecoder().decode(bytes);
+console.log("info.txt:", JSON.stringify(text));

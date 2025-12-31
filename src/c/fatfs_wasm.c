@@ -78,39 +78,41 @@ static int fatfsjs_parse_layout(const uint8_t *image, uint32_t image_len,
     uint8_t sectors_per_cluster = image[13];
     uint16_t reserved_sectors = fatfsjs_read_u16(image + 14);
     uint8_t num_fats = image[16];
-    uint16_t root_entry_count = fatfsjs_read_u16(image + 17);
-    uint16_t total_sectors_16 = fatfsjs_read_u16(image + 19);
     uint16_t fat_size_sectors = fatfsjs_read_u16(image + 22);
-    uint32_t total_sectors_32 = fatfsjs_read_u32(image + 32);
-    uint32_t total_sectors =
-        total_sectors_16 ? total_sectors_16 : total_sectors_32;
 
     if (bytes_per_sector != FATFSJS_BYTES_PER_SECTOR) {
         return FATFSJS_ERR_INVAL;
     }
     if (sectors_per_cluster == 0 || reserved_sectors == 0 || num_fats == 0 ||
-        fat_size_sectors == 0 || total_sectors == 0) {
+        fat_size_sectors == 0) {
         return FATFSJS_ERR_INVAL;
     }
 
-    uint32_t root_dir_sectors =
-        ((uint32_t)root_entry_count * FATFSJS_DIR_ENTRY_SIZE +
-         (bytes_per_sector - 1)) /
-        bytes_per_sector;
+    if (image_len % bytes_per_sector != 0) {
+        return FATFSJS_ERR_INVAL;
+    }
+    uint32_t total_sectors = image_len / bytes_per_sector;
+    if (total_sectors == 0) {
+        return FATFSJS_ERR_INVAL;
+    }
+
     uint32_t fat_start_sector = reserved_sectors;
-    uint32_t root_dir_sector = fat_start_sector + num_fats * fat_size_sectors;
-    uint32_t data_start_sector = root_dir_sector + root_dir_sectors;
-
-    if (root_dir_sector != FATFSJS_ROOT_DIR_SECTOR ||
-        data_start_sector != FATFSJS_DATA_START_SECTOR) {
+    uint32_t root_dir_sector = FATFSJS_ROOT_DIR_SECTOR;
+    uint32_t data_start_sector = FATFSJS_DATA_START_SECTOR;
+    if (root_dir_sector >= data_start_sector) {
+        return FATFSJS_ERR_INVAL;
+    }
+    if (fat_start_sector + fat_size_sectors > root_dir_sector) {
+        return FATFSJS_ERR_INVAL;
+    }
+    if (data_start_sector >= total_sectors) {
         return FATFSJS_ERR_INVAL;
     }
 
-    uint64_t total_bytes = (uint64_t)total_sectors * bytes_per_sector;
-    if (total_bytes == 0 || total_bytes > UINT32_MAX) {
-        return FATFSJS_ERR_INVAL;
-    }
-    if ((uint32_t)total_bytes != image_len) {
+    uint32_t root_dir_sectors = data_start_sector - root_dir_sector;
+    uint32_t root_entry_count =
+        (root_dir_sectors * bytes_per_sector) / FATFSJS_DIR_ENTRY_SIZE;
+    if (root_dir_sectors == 0 || root_entry_count == 0) {
         return FATFSJS_ERR_INVAL;
     }
 
