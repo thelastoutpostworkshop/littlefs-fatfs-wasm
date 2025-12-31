@@ -12,6 +12,11 @@
 #define FATFSJS_DIR_ENTRY_SIZE 32
 #define FATFSJS_MAX_NAME 64
 #define FATFSJS_FAT16_EOC 0xFFF8
+#define FATFSJS_LFN_ATTR 0x0F
+#define FATFSJS_LFN_ORDER_MASK 0x1F
+#define FATFSJS_LFN_LAST_FLAG 0x40
+#define FATFSJS_LFN_CHARS_PER_ENTRY 13
+#define FATFSJS_MAX_LFN_ENTRIES 20
 
 #define FATFSJS_ERR_INVAL -1
 #define FATFSJS_ERR_NOT_MOUNTED -2
@@ -38,9 +43,12 @@ typedef struct {
 
 typedef struct {
     char name[FATFSJS_MAX_NAME];
+    char short_name[FATFSJS_MAX_NAME];
     uint32_t size;
     uint16_t first_cluster;
     bool is_dir;
+    bool has_short_name;
+    bool has_long_name;
 } fatfs_dirent_t;
 
 typedef struct {
@@ -48,12 +56,21 @@ typedef struct {
     uint16_t start_cluster;
 } fatfs_dir_t;
 
+typedef struct {
+    uint16_t chars[FATFSJS_MAX_NAME];
+    uint8_t expected_entries;
+    uint32_t seen_mask;
+    uint8_t checksum;
+    bool active;
+} fatfs_lfn_state_t;
+
 static fatfs_layout_t g_layout;
 static uint8_t *g_storage = NULL;
 static uint32_t g_storage_len = 0;
 static bool g_is_mounted = false;
 
 static int fatfsjs_read_fat(uint16_t cluster, uint16_t *value);
+static void fatfsjs_lfn_reset(fatfs_lfn_state_t *state);
 
 static uint16_t fatfsjs_read_u16(const uint8_t *ptr) {
     return (uint16_t)ptr[0] | ((uint16_t)ptr[1] << 8);
@@ -62,6 +79,21 @@ static uint16_t fatfsjs_read_u16(const uint8_t *ptr) {
 static uint32_t fatfsjs_read_u32(const uint8_t *ptr) {
     return (uint32_t)ptr[0] | ((uint32_t)ptr[1] << 8) |
            ((uint32_t)ptr[2] << 16) | ((uint32_t)ptr[3] << 24);
+}
+
+static uint8_t fatfsjs_lfn_checksum(const uint8_t *short_entry) {
+    uint8_t sum = 0;
+    for (int i = 0; i < 11; i++) {
+        sum = (uint8_t)(((sum & 1u) ? 0x80u : 0) + (sum >> 1) + short_entry[i]);
+    }
+    return sum;
+}
+
+static void fatfsjs_lfn_reset(fatfs_lfn_state_t *state) {
+    if (!state) {
+        return;
+    }
+    memset(state, 0, sizeof(*state));
 }
 
 static void fatfsjs_release(void) {
@@ -240,6 +272,61 @@ static void fatfsjs_parse_short_name(const uint8_t *entry, char *out,
     }
 }
 
+static void fatfsjs_read_lfn_chars(const uint8_t *entry, uint16_t *out) {
+    int idx = 0;
+    for (int i = 0; i < 5; i++) {
+        out[idx++] = fatfsjs_read_u16(entry + 1 + i * 2);
+    }
+    for (int i = 0; i < 6; i++) {
+        out[idx++] = fatfsjs_read_u16(entry + 14 + i * 2);
+    }
+    for (int i = 0; i < 2; i++) {
+        out[idx++] = fatfsjs_read_u16(entry + 28 + i * 2);
+    }
+}
+
+static bool fatfsjs_lfn_complete(const fatfs_lfn_state_t *state) {
+    if (!state || !state->active || state->expected_entries == 0) {
+        return false;
+    }
+    if (state->expected_entries > FATFSJS_MAX_LFN_ENTRIES) {
+        return false;
+    }
+    uint32_t mask = (1u << state->expected_entries) - 1u;
+    return (state->seen_mask & mask) == mask;
+}
+
+static bool fatfsjs_lfn_build_name(const fatfs_lfn_state_t *state, char *out,
+                                   size_t out_len) {
+    if (!state || !out || out_len == 0) {
+        return false;
+    }
+    if (!fatfsjs_lfn_complete(state)) {
+        return false;
+    }
+    size_t max_units =
+        (size_t)state->expected_entries * FATFSJS_LFN_CHARS_PER_ENTRY;
+    if (max_units > FATFSJS_MAX_NAME) {
+        max_units = FATFSJS_MAX_NAME;
+    }
+    size_t len = 0;
+    for (size_t i = 0; i < max_units; i++) {
+        uint16_t ch = state->chars[i];
+        if (ch == 0x0000 || ch == 0xFFFF) {
+            break;
+        }
+        if (len + 1 >= out_len) {
+            return false;
+        }
+        out[len++] = (ch <= 0x7F) ? (char)ch : '?';
+    }
+    if (len == 0) {
+        return false;
+    }
+    out[len] = '\0';
+    return true;
+}
+
 static int fatfsjs_compare_ci(const char *a, const char *b) {
     while (*a && *b) {
         int ca = toupper((unsigned char)*a);
@@ -254,26 +341,72 @@ static int fatfsjs_compare_ci(const char *a, const char *b) {
 }
 
 static int fatfsjs_decode_entry(const uint8_t *entry, fatfs_dirent_t *out,
-                                bool *is_end) {
+                                bool *is_end, fatfs_lfn_state_t *lfn) {
     uint8_t first = entry[0];
     if (first == 0x00) {
         if (is_end) {
             *is_end = true;
         }
+        fatfsjs_lfn_reset(lfn);
         return 0;
     }
     if (first == 0xE5) {
         if (is_end) {
             *is_end = false;
         }
+        fatfsjs_lfn_reset(lfn);
         return 1;
     }
 
     uint8_t attr = entry[11];
-    if (attr == 0x0F || (attr & 0x08)) {
+    if (attr == FATFSJS_LFN_ATTR) {
+        if (!lfn) {
+            return 1;
+        }
+        uint8_t order_raw = entry[0];
+        uint8_t order = order_raw & FATFSJS_LFN_ORDER_MASK;
+        bool is_last = (order_raw & FATFSJS_LFN_LAST_FLAG) != 0;
+        if (order == 0 || order > FATFSJS_MAX_LFN_ENTRIES) {
+            fatfsjs_lfn_reset(lfn);
+            return 1;
+        }
+        if (is_last) {
+            fatfsjs_lfn_reset(lfn);
+            lfn->active = true;
+            lfn->expected_entries = order;
+            lfn->checksum = entry[13];
+            lfn->seen_mask = 0;
+            for (size_t i = 0; i < FATFSJS_MAX_NAME; i++) {
+                lfn->chars[i] = 0xFFFF;
+            }
+        }
+        if (!lfn->active || lfn->expected_entries == 0) {
+            return 1;
+        }
+        if (entry[13] != lfn->checksum || order > lfn->expected_entries) {
+            fatfsjs_lfn_reset(lfn);
+            return 1;
+        }
+
+        size_t offset =
+            (size_t)(order - 1) * FATFSJS_LFN_CHARS_PER_ENTRY;
+        if (offset + FATFSJS_LFN_CHARS_PER_ENTRY > FATFSJS_MAX_NAME) {
+            fatfsjs_lfn_reset(lfn);
+            return 1;
+        }
+        uint16_t chars[FATFSJS_LFN_CHARS_PER_ENTRY];
+        fatfsjs_read_lfn_chars(entry, chars);
+        for (size_t i = 0; i < FATFSJS_LFN_CHARS_PER_ENTRY; i++) {
+            lfn->chars[offset + i] = chars[i];
+        }
+        lfn->seen_mask |= (1u << (order - 1));
+        return 1;
+    }
+    if (attr & 0x08) {
         if (is_end) {
             *is_end = false;
         }
+        fatfsjs_lfn_reset(lfn);
         return 1;
     }
 
@@ -283,23 +416,38 @@ static int fatfsjs_decode_entry(const uint8_t *entry, fatfs_dirent_t *out,
         if (is_end) {
             *is_end = false;
         }
+        fatfsjs_lfn_reset(lfn);
         return 1;
     }
+
+    if (out) {
+        memset(out, 0, sizeof(*out));
+        strncpy(out->short_name, entry_name, sizeof(out->short_name));
+        out->short_name[sizeof(out->short_name) - 1] = '\0';
+        out->has_short_name = true;
+        out->size = fatfsjs_read_u32(entry + 28);
+        out->first_cluster = fatfsjs_read_u16(entry + 26);
+        out->is_dir = (attr & 0x10) != 0;
+        bool used_long = false;
+        if (lfn && lfn->active &&
+            fatfsjs_lfn_checksum(entry) == lfn->checksum) {
+            used_long = fatfsjs_lfn_build_name(lfn, out->name, sizeof(out->name));
+        }
+        if (!used_long) {
+            strncpy(out->name, entry_name, sizeof(out->name));
+            out->name[sizeof(out->name) - 1] = '\0';
+        }
+        out->has_long_name = used_long;
+    }
+
+    fatfsjs_lfn_reset(lfn);
+
     if (strcmp(entry_name, ".") == 0 || strcmp(entry_name, "..") == 0) {
         if (is_end) {
             *is_end = false;
         }
         return 1;
     }
-
-    if (out) {
-        out->size = fatfsjs_read_u32(entry + 28);
-        out->first_cluster = fatfsjs_read_u16(entry + 26);
-        out->is_dir = (attr & 0x10) != 0;
-        strncpy(out->name, entry_name, sizeof(out->name));
-        out->name[sizeof(out->name) - 1] = '\0';
-    }
-
     if (is_end) {
         *is_end = false;
     }
@@ -318,12 +466,14 @@ static int fatfsjs_iterate_root(fatfsjs_entry_cb cb, void *ctx) {
     }
 
     uint32_t entries = g_layout.root_entry_count;
+    fatfs_lfn_state_t lfn_state;
+    fatfsjs_lfn_reset(&lfn_state);
     for (uint32_t i = 0; i < entries; i++) {
         const uint8_t *entry =
             g_storage + root_offset + (uint64_t)i * FATFSJS_DIR_ENTRY_SIZE;
         fatfs_dirent_t decoded;
         bool is_end = false;
-        int status = fatfsjs_decode_entry(entry, &decoded, &is_end);
+        int status = fatfsjs_decode_entry(entry, &decoded, &is_end, &lfn_state);
         if (is_end) {
             return 0;
         }
@@ -353,6 +503,8 @@ static int fatfsjs_iterate_cluster_dir(uint16_t start_cluster,
 
     uint16_t cluster = start_cluster;
     uint32_t guard = g_layout.cluster_count + 1;
+    fatfs_lfn_state_t lfn_state;
+    fatfsjs_lfn_reset(&lfn_state);
 
     while (true) {
         if (cluster < 2 || guard == 0) {
@@ -372,7 +524,7 @@ static int fatfsjs_iterate_cluster_dir(uint16_t start_cluster,
                 g_storage + offset + (uint64_t)i * FATFSJS_DIR_ENTRY_SIZE;
             fatfs_dirent_t decoded;
             bool is_end = false;
-            int status = fatfsjs_decode_entry(entry, &decoded, &is_end);
+            int status = fatfsjs_decode_entry(entry, &decoded, &is_end, &lfn_state);
             if (is_end) {
                 return 0;
             }
@@ -417,7 +569,9 @@ struct fatfsjs_find_ctx {
 
 static int fatfsjs_find_cb(const fatfs_dirent_t *entry, void *ctx) {
     struct fatfsjs_find_ctx *state = (struct fatfsjs_find_ctx *)ctx;
-    if (fatfsjs_compare_ci(state->name, entry->name) == 0) {
+    if (fatfsjs_compare_ci(state->name, entry->name) == 0 ||
+        (entry->has_short_name &&
+         fatfsjs_compare_ci(state->name, entry->short_name) == 0)) {
         *state->out = *entry;
         return 1;
     }
